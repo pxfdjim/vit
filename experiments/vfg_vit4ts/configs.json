@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "experiment_name": "visual_frequency_guided_vit4ts",
+  "seed": 20261027,
+  "datasets": [
+    "realTraffic",
+    "realTweets",
+    "SMAP",
+    "MSL",
+    "artificialWithAnomaly",
+    "realAdExchange",
+    "realAWSCloudwatch"
+  ],
+  "expected_signal_counts": {
+    "realTraffic": 7,
+    "realTweets": 10,
+    "SMAP": 53,
+    "MSL": 27,
+    "artificialWithAnomaly": 6,
+    "realAdExchange": 5,
+    "realAWSCloudwatch": 17
+  },
+  "evaluation": {
+    "alphas": [0.1, 0.01, 0.001],
+    "threshold_method": "mean",
+    "smoothing": true,
+    "sliding": false,
+    "anomaly_padding": 0,
+    "selection_protocol": "For each dataset, variant, and alpha, first take the unweighted mean of per-signal contextual F1. Select the alpha with the largest mean. Macro average the seven selected dataset F1 values.",
+    "require_complete_dataset": true
+  },
+  "model": {
+    "window_size": 224,
+    "step_size": 56,
+    "window_step_ratio": 4.0,
+    "image_size": [224, 224],
+    "patch_size": 16,
+    "visual_grid": [14, 14],
+    "visual_encoder": "OpenAI CLIP ViT-B/16",
+    "freeze_visual_encoder": true,
+    "standardize_visual": true,
+    "frequency_input": "same detrended signal as visual branch before global min-max normalization",
+    "frequency": {
+      "kind": "local_stft",
+      "window": "hann",
+      "fft_length": 64,
+      "hop_length": 16,
+      "time_positions": 14,
+      "kept_bins": 32,
+      "exclude_dc": true,
+      "magnitude_transform": "log1p",
+      "boundary": "centered_reflect_pad",
+      "boundary_pad_points_each_side": 24,
+      "preserve_shape": true,
+      "preserve_energy": true
+    },
+    "matching": {
+      "top_k": 5,
+      "lambda": 0.3,
+      "distance": "clamped_cosine",
+      "calibration": "unlabeled_reference_distance_statistics",
+      "modified_visual_scale": "base_patch_only",
+      "keep_other_visual_scales": true
+    },
+    "harmonic": {
+      "implementation": "stable",
+      "retain_legacy_for_comparison": true,
+      "count_fix_as_model_contribution": false
+    }
+  },
+  "variants": {
+    "A_stable_vit4ts": {
+      "label": "A: Stable ViT4TS",
+      "base_patch_score": "visual_min_distance",
+      "large_mid_visual_scales": true,
+      "frequency": false,
+      "harmonic": "stable"
+    },
+    "B_frequency_only": {
+      "label": "B: Frequency-only",
+      "base_patch_score": "frequency_min_distance",
+      "large_mid_visual_scales": false,
+      "frequency": "local_stft_shape_and_energy",
+      "frequency_reference": "independent_median",
+      "harmonic": "stable"
+    },
+    "C_score_fusion": {
+      "label": "C: Score Fusion",
+      "base_patch_score": "visual_min_distance",
+      "large_mid_visual_scales": true,
+      "frequency": "local_stft_shape_and_energy",
+      "fusion": "independent_final_score",
+      "lambda": 0.3,
+      "calibrate_frequency": true,
+      "frequency_reference": "independent_median",
+      "harmonic": "stable"
+    },
+    "D_frequency_guided": {
+      "label": "D: Frequency-Guided",
+      "base_patch_score": "visual_topk_frequency_rerank",
+      "large_mid_visual_scales": true,
+      "frequency": "local_stft_shape_and_energy",
+      "top_k": 5,
+      "lambda": 0.3,
+      "calibrate_frequency": true,
+      "frequency_reference": "independent_median",
+      "harmonic": "stable",
+      "lambda_zero_must_equal_visual": true
+    },
+    "E1_global_fft": {
+      "label": "E1: Whole-window FFT",
+      "base_patch_score": "visual_topk_frequency_rerank",
+      "large_mid_visual_scales": true,
+      "frequency": "whole_window_fft_shape_and_energy",
+      "top_k": 5,
+      "lambda": 0.3,
+      "calibrate_frequency": true,
+      "frequency_reference": "independent_median",
+      "harmonic": "stable"
+    },
+    "E2_shape_only": {
+      "label": "E2: Spectrum shape only",
+      "base_patch_score": "visual_topk_frequency_rerank",
+      "large_mid_visual_scales": true,
+      "frequency": "local_stft_shape_only",
+      "top_k": 5,
+      "lambda": 0.3,
+      "calibrate_frequency": true,
+      "frequency_reference": "independent_median",
+      "harmonic": "stable"
+    },
+    "E2_energy_only": {
+      "label": "E2: Spectrum energy only",
+      "base_patch_score": "visual_topk_frequency_rerank",
+      "large_mid_visual_scales": true,
+      "frequency": "local_stft_energy_only",
+      "top_k": 5,
+      "lambda": 0.3,
+      "calibrate_frequency": true,
+      "frequency_reference": "independent_median",
+      "harmonic": "stable"
+    },
+    "E3_direct_distance": {
+      "label": "E3: Direct patch-distance fusion",
+      "base_patch_score": "all_reference_visual_frequency_joint_min",
+      "large_mid_visual_scales": true,
+      "frequency": "local_stft_shape_and_energy",
+      "lambda": 0.3,
+      "calibrate_frequency": true,
+      "frequency_reference": "independent_median",
+      "harmonic": "stable"
+    },
+    "E4_paired_reference": {
+      "label": "E4: Paired real-window reference",
+      "base_patch_score": "visual_topk_frequency_rerank",
+      "large_mid_visual_scales": true,
+      "frequency": "local_stft_shape_and_energy",
+      "top_k": 5,
+      "lambda": 0.3,
+      "calibrate_frequency": true,
+      "frequency_reference": "paired_real_window_library",
+      "reference_library_size": 128,
+      "reference_sampling": "fixed_evenly_spaced_unlabeled",
+      "harmonic": "stable"
+    }
+  },
+  "suites": {
+    "base": [
+      "A_stable_vit4ts",
+      "B_frequency_only",
+      "C_score_fusion",
+      "D_frequency_guided"
+    ],
+    "core_ablations": [
+      "D_frequency_guided",
+      "E1_global_fft",
+      "E2_shape_only",
+      "E2_energy_only",
+      "C_score_fusion",
+      "E3_direct_distance"
+    ],
+    "extended_ablations": [
+      "D_frequency_guided",
+      "E4_paired_reference"
+    ],
+    "all": [
+      "A_stable_vit4ts",
+      "B_frequency_only",
+      "C_score_fusion",
+      "D_frequency_guided",
+      "E1_global_fft",
+      "E2_shape_only",
+      "E2_energy_only",
+      "E3_direct_distance",
+      "E4_paired_reference"
+    ]
+  },
+  "comparisons": {
+    "base": {
+      "A": "A_stable_vit4ts",
+      "B": "B_frequency_only",
+      "C": "C_score_fusion",
+      "D": "D_frequency_guided"
+    },
+    "E1_fft_vs_stft": {
+      "whole_window_fft": "E1_global_fft",
+      "local_stft": "D_frequency_guided"
+    },
+    "E2_shape_energy": {
+      "shape": "E2_shape_only",
+      "energy": "E2_energy_only",
+      "shape_and_energy": "D_frequency_guided"
+    },
+    "E3_fusion_location": {
+      "final_score": "C_score_fusion",
+      "direct_patch_distance": "E3_direct_distance",
+      "visual_topk_rerank": "D_frequency_guided"
+    },
+    "E4_reference": {
+      "independent_medians": "D_frequency_guided",
+      "paired_real_windows": "E4_paired_reference"
+    }
+  },
+  "event_analysis": {
+    "baseline": "A_stable_vit4ts",
+    "candidate": "D_frequency_guided",
+    "short_max_points": 56,
+    "long_min_points": 224,
+    "semantic_types": ["periodic", "trend"],
+    "semantic_annotation_policy": "Only use explicit annotations. Leave events unclassified when anomaly type is unclear.",
+    "semantic_annotations": {}
+  }
+}
