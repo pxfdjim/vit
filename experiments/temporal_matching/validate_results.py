@@ -14,7 +14,7 @@ from experiments.temporal_matching.runner import load_json, publish_json_no_repl
 BMID = "B_paired_2d_mid"
 TARGET_MACRO = 0.657370
 TOLERANCE = 1e-6
-DIAGNOSTIC_FAMILIES = {"T2", "T3", "T4", "T5"}
+DIAGNOSTIC_FAMILIES = {"T1", "T2", "T3", "T4", "T5"}
 
 
 def previous_score(roots: list[Path], dataset: str, signal: str) -> Path:
@@ -86,7 +86,12 @@ def run(args: argparse.Namespace) -> int:
             if not diag.is_file(): raise FileNotFoundError(diag)
             with np.load(diag,allow_pickle=False) as stored:
                 if not stored.files or any(not np.isfinite(stored[name]).all() for name in stored.files): raise RuntimeError(f"invalid diagnostic {diag}")
-                required={"reference_window_ids","shift","column_costs"} if family in {"T2","T4"} else {"reference_window_ids","path_offsets","reference_columns","local_costs","normalized_path_costs"}
+                if family == "T1":
+                    required={"reference_window_ids","reference_columns","column_costs"}
+                elif family in {"T2","T4"}:
+                    required={"reference_window_ids","shift","column_costs"}
+                else:
+                    required={"reference_window_ids","path_offsets","reference_columns","local_costs","normalized_path_costs"}
                 if not required.issubset(stored.files): raise RuntimeError(f"missing diagnostic keys {diag}")
     if len(pool)!=expected_signals or any(len(v)!=1 for v in pool.values()): raise RuntimeError("paired variants do not share one pool digest per signal")
     diag_paths=list((args.output_root/"path_diagnostics").glob("*/*/*.npz"))

@@ -334,10 +334,14 @@ def path_diagnostics(output_root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
                 offsets = stored["shift"].astype(float).reshape(-1)
                 costs = stored["column_costs"].astype(float).reshape(-1)
                 path_costs = np.asarray([], dtype=float); kind = "shift"
-            else:
+            elif "path_offsets" in stored.files:
                 offsets = stored["path_offsets"].astype(float).reshape(-1)
                 costs = stored["local_costs"].astype(float).reshape(-1)
                 path_costs = stored["normalized_path_costs"].astype(float).reshape(-1); kind = "dtw"
+            else:
+                # T1 stores its independent column assignments for auditing,
+                # but it has neither a common shift nor a monotone DTW path.
+                continue
         rows.append({"dataset": dataset, "signal": signal, "model": model, "path_kind": kind,
                      "n_offsets": len(offsets), "mean_offset": float(offsets.mean()),
                      "mean_abs_offset": float(np.abs(offsets).mean()),
@@ -376,7 +380,7 @@ def path_plots(signal_paths: pd.DataFrame, output_root: Path) -> None:
         figure.tight_layout(); publish_figure(output_root / "plots/paths" / f"{dataset}_{row.signal}_dtw.png", figure); plt.close(figure)
 
 
-def report(best: pd.DataFrame, macro: pd.DataFrame, changes: pd.DataFrame, event_totals: pd.DataFrame, runtime: pd.DataFrame, incremental: pd.DataFrame, completion: pd.DataFrame, config: Mapping[str, Any]) -> str:
+def report(best: pd.DataFrame, macro: pd.DataFrame, changes: pd.DataFrame, event_totals: pd.DataFrame, runtime: pd.DataFrame, incremental: pd.DataFrame, completion: pd.DataFrame, path_dataset: pd.DataFrame, config: Mapping[str, Any]) -> str:
     def table(frame: pd.DataFrame) -> str:
         if frame.empty: return "No complete results."
         header = "| " + " | ".join(frame.columns) + " |\n| " + " | ".join("---" for _ in frame.columns) + " |"
@@ -402,6 +406,9 @@ def report(best: pd.DataFrame, macro: pd.DataFrame, changes: pd.DataFrame, event
         "## Runtime", "",
         "Runtime fields are backend reported. Shared rendering/CLIP/cache work and per-variant sampling, matching, and score recovery remain separate when the backend exposes them; shared costs must not be summed once per variant.", "",
         table(runtime), "", "## Incremental matching timing", "", table(incremental), "",
+        "## Temporal correspondence diagnostics", "",
+        "Column assignments or paths are saved for every T1--T5 signal. The compact table reports the constrained T2 and T3 branches; fusion variants reuse those same correspondences.", "",
+        table(path_dataset[path_dataset.model.isin(["T2_shift_consistent", "T3_constrained_dtw"])] if not path_dataset.empty else path_dataset), "",
         "## Completion", "", f"Each complete model contains all {expected_total} configured signals; the rows below are checked before final reporting.", "", table(completion), ""
     ])
 
@@ -424,7 +431,7 @@ def run(args: argparse.Namespace) -> int:
     summary_plots(best, macro, args.output_root)
     path_plots(path_signal, args.output_root)
     failure_plots(events, changes, args.data_root, args.output_root, config)
-    publish_bytes_no_replace(args.output_root / "experiment_report.md", report(best, macro, changes, event_totals, runtime, incremental, completion, config).encode("utf-8"))
+    publish_bytes_no_replace(args.output_root / "experiment_report.md", report(best, macro, changes, event_totals, runtime, incremental, completion, path_dataset, config).encode("utf-8"))
     if failures: print("WARNING incomplete diagnostic summary:\n" + "\n".join(failures))
     return 0
 

@@ -322,7 +322,7 @@ def run(args: argparse.Namespace) -> int:
         score_dir = args.output_root / "point_scores" / dataset / signal
         diagnostic_dir = args.output_root / "path_diagnostics" / dataset / signal
         metric_dir = args.output_root / "metrics" / dataset / signal
-        diagnostic_families = {"T2", "T3", "T4", "T5"}
+        diagnostic_families = {"T1", "T2", "T3", "T4", "T5"}
         def needs_backend(name: str) -> bool:
             score_missing = not (score_dir / f"{name}.npz").exists()
             family = str(config["variants"][name]["family"]).upper()
