@@ -130,12 +130,24 @@ class PairedMatchingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-overlapping reference"):
             select_common_visual_windows(random_visual(windows=7))
 
-    def test_fft_guidance_refuses_fewer_than_five_nonoverlapping_windows(self):
-        visual = random_visual(windows=8)
+    def test_fft_guidance_pads_short_rows_and_keeps_all_valid_references(self):
+        visual = random_visual(windows=10)
         pool = select_common_visual_windows(visual)
-        frequency = full_window_fft_encoding(torch.randn(8, 224))
-        with self.assertRaisesRegex(ValueError, "requires 5"):
-            select_fft_guided_windows(frequency, pool)
+        frequency = full_window_fft_encoding(torch.randn(10, 224))
+        guided = select_fft_guided_windows(frequency, pool)
+        counts = guided.valid.sum(dim=1)
+
+        self.assertEqual(guided.window_ids.shape, (10, 5))
+        self.assertEqual(int(counts.min()), 3)
+        self.assertEqual(int(counts.max()), 5)
+        self.assertTrue(torch.all(guided.window_ids[~guided.valid] == -1))
+        self.assertTrue(torch.isinf(guided.frequency_distances[~guided.valid]).all())
+        for query in range(10):
+            ids = guided.ids_for(query)
+            allowed = pool.ids_for(query)
+            self.assertEqual(ids.numel(), min(5, allowed.numel()))
+            self.assertTrue(torch.all((ids - query).abs() >= 4))
+            self.assertTrue(all(int(item) in set(allowed.tolist()) for item in ids))
 
     def test_all_cpu_products_stay_on_cpu(self):
         visual = random_visual(windows=8)
@@ -253,6 +265,30 @@ class CacheOnlyBackendTests(unittest.TestCase):
                 predictions["D_fft_guided"]["metadata"]["fft_guided_selected_windows"],
                 5,
             )
+            guided_metadata = predictions["D_fft_guided"]["metadata"]
+            self.assertEqual(guided_metadata["fft_guided_target_windows"], 5)
+            self.assertEqual(guided_metadata["fft_guided_min_selected_windows"], 5)
+            self.assertEqual(guided_metadata["fft_guided_max_selected_windows"], 5)
+
+    def test_backend_d_accepts_ten_window_series_with_three_to_five_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = create_backend({}, "cpu", directory)
+            frame = self.frame(length=741)
+            context = {"dataset": "Yahoo_A1", "signal": "real_54"}
+            digest = backend._input_digest(frame["value"].to_numpy())
+            path = backend._cache_path(context, digest)
+            path.parent.mkdir(parents=True)
+            torch.save(self.cache_payload(backend, frame, windows=10), path)
+
+            prediction = backend.predict_variants(
+                frame, {"D_fft_guided": {}}, context
+            )["D_fft_guided"]
+            metadata = prediction["metadata"]
+            self.assertEqual(prediction["scores"].shape, (741,))
+            self.assertTrue(np.isfinite(prediction["scores"]).all())
+            self.assertEqual(metadata["fft_guided_target_windows"], 5)
+            self.assertEqual(metadata["fft_guided_min_selected_windows"], 3)
+            self.assertEqual(metadata["fft_guided_max_selected_windows"], 5)
 
     def test_backend_rejects_short_paired_series_before_matching(self):
         with tempfile.TemporaryDirectory() as directory:

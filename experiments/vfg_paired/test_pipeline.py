@@ -13,7 +13,13 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path: sys.path.insert(0, str(REPO_ROOT))
-from experiments.vfg_paired.runner import call_backend, publish_bytes_no_replace
+from experiments.vfg_paired.runner import (
+    call_backend,
+    discover_tasks,
+    load_signal,
+    publish_bytes_no_replace,
+    signal_path,
+)
 from experiments.vfg_paired.summarize import (
     aggregate,
     completion_table,
@@ -44,7 +50,7 @@ def test_adapter() -> None:
 
 
 def synthetic_config() -> dict:
-    return {"datasets": ["real", "artificialWithAnomaly"], "real_datasets": ["real"], "expected_signal_counts": {"real": 2, "artificialWithAnomaly": 1}, "evaluation": {"alphas": [0.1, 0.01], "selection_protocol": "synthetic strict protocol"}, "variants_order": ["A", "B", "C", "D", "E"], "comparisons": [{"name": "B_minus_A", "left": "B", "right": "A"}]}
+    return {"datasets": ["real", "artificialWithAnomaly"], "macro_scopes": {"real_1": ["real"], "all_2": ["real", "artificialWithAnomaly"]}, "expected_signal_counts": {"real": 2, "artificialWithAnomaly": 1}, "evaluation": {"alphas": [0.1, 0.01], "selection_protocol": "synthetic strict protocol"}, "variants_order": ["A", "B", "C", "D", "E"], "comparisons": [{"name": "B_minus_A", "left": "B", "right": "A"}]}
 
 
 def test_strict_aggregation_and_macros() -> None:
@@ -62,11 +68,45 @@ def test_strict_aggregation_and_macros() -> None:
     chosen = best[(best.dataset == "real") & (best.model == "A")].iloc[0]
     assert chosen.best_alpha == 0.01 and abs(chosen.f1_max - 0.6) < 1e-12
     macro = macro_table(best, config); changes = comparisons(best, macro, config)
-    assert set(macro.scope) == {"real_6", "all_7"}
-    assert abs(changes[(changes.scope == "real_6")].iloc[0].delta_f1max - 0.1) < 1e-12
+    assert set(macro.scope) == {"real_1", "all_2"}
+    assert abs(changes[(changes.scope == "real_1")].iloc[0].delta_f1max - 0.1) < 1e-12
     completion = completion_table(pd.DataFrame(rows), config)
+    assert set(completion[completion.dataset.str.startswith("ALL_")].dataset) == {"ALL_3"}
     rendered = report(best, macro, changes, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), completion, config)
-    assert "real_6" in rendered and "all_7" in rendered and "Completion" in rendered
+    assert "real_1" in rendered and "all_2" in rendered and "all 3 configured signals" in rendered
+
+
+def test_yahoo_discovery_and_row_timestamps() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "Yahoo_S5/A1Benchmark").mkdir(parents=True)
+        (root / "Yahoo_S5/A3Benchmark").mkdir(parents=True)
+        (root / "datasets.csv").write_text(
+            'YAHOOA1,"(\'real_1\',)"\nYAHOOA3,"(\'A3Benchmark-TS1\', \'A3Benchmark-TS2\')"\n',
+            encoding="utf-8",
+        )
+        pd.DataFrame({"timestamp": [20, 10], "value": [2.0, 1.0], "is_anomaly": [0, 1]}).to_csv(
+            root / "Yahoo_S5/A1Benchmark/real_1.csv", index=False
+        )
+        for name in ["A3Benchmark-TS1", "A3Benchmark-TS2"]:
+            pd.DataFrame({"timestamps": [30, 10], "value": [3.0, 1.0], "anomaly": [0, 1]}).to_csv(
+                root / f"Yahoo_S5/A3Benchmark/{name}.csv", index=False
+            )
+        pd.DataFrame({"timestamps": [1], "value": [999.0], "anomaly": [0]}).to_csv(
+            root / "Yahoo_S5/A3Benchmark/A3Benchmark_all.csv", index=False
+        )
+        config = {"datasets": ["YAHOOA1", "YAHOOA3"], "expected_signal_counts": {"YAHOOA1": 1, "YAHOOA3": 2}}
+        tasks = discover_tasks(config, root)
+        assert [(dataset, signal) for dataset, signal, _ in tasks] == [
+            ("YAHOOA1", "real_1"),
+            ("YAHOOA3", "A3Benchmark-TS1"),
+            ("YAHOOA3", "A3Benchmark-TS2"),
+        ]
+        assert all("_all.csv" not in str(path) for _, _, path in tasks)
+        a1 = load_signal(signal_path(root, "YAHOOA1", "real_1"), "YAHOOA1")
+        a3 = load_signal(signal_path(root, "YAHOOA3", "A3Benchmark-TS1"), "YAHOOA3")
+        assert a1.timestamp.tolist() == [1, 2] and a1.value.tolist() == [2.0, 1.0]
+        assert a3.timestamp.tolist() == [1, 2] and a3.value.tolist() == [3.0, 1.0]
 
 
 def test_incremental_timing() -> None:
@@ -105,5 +145,28 @@ def test_event_accounting_and_failure_plot() -> None:
         assert len(list((output_root / "plots/failures").glob("*.png"))) == 1
 
 
+def test_yahoo_failure_plot_path_and_alignment() -> None:
+    config = {
+        "datasets": ["YAHOOA3"],
+        "comparisons": [{"name": "B_minus_A", "left": "B", "right": "A"}],
+    }
+    events = pd.DataFrame([{
+        "comparison": "B_minus_A", "dataset": "YAHOOA3", "signal": "A3Benchmark-TS1",
+        "event_index": 0, "start": 3, "end": 4, "change": "lost",
+    }])
+    changes = pd.DataFrame([{"scope": "dataset", "dataset": "YAHOOA3", "comparison": "B_minus_A", "delta_f1max": -0.1}])
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory); data_root = root / "data"; output_root = root / "output"
+        source = data_root / "Yahoo_S5/A3Benchmark/A3Benchmark-TS1.csv"
+        source.parent.mkdir(parents=True)
+        pd.DataFrame({"timestamps": np.arange(100, 132), "value": np.sin(np.arange(32)), "anomaly": 0}).to_csv(source, index=False)
+        score_dir = output_root / "point_scores/YAHOOA3/A3Benchmark-TS1"; score_dir.mkdir(parents=True)
+        timestamps = np.arange(1, 33)
+        np.savez_compressed(score_dir / "A.npz", scores=np.linspace(0, 1, 32), timestamps=timestamps)
+        np.savez_compressed(score_dir / "B.npz", scores=np.linspace(1, 0, 32), timestamps=timestamps)
+        failure_plots(events, changes, data_root, output_root, config)
+        assert len(list((output_root / "plots/failures").glob("*.png"))) == 1
+
+
 if __name__ == "__main__":
-    test_atomic_no_replace(); test_adapter(); test_strict_aggregation_and_macros(); test_incremental_timing(); test_event_accounting_and_failure_plot(); print("paired pipeline checks passed")
+    test_atomic_no_replace(); test_adapter(); test_strict_aggregation_and_macros(); test_yahoo_discovery_and_row_timestamps(); test_incremental_timing(); test_event_accounting_and_failure_plot(); test_yahoo_failure_plot_path_and_alignment(); print("paired pipeline checks passed")

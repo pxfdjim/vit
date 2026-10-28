@@ -207,8 +207,8 @@ def build_paired_visual_match_cache(
     """Compute each query/common-pool visual distance matrix exactly once.
 
     The full matrix is discarded after extracting B's minimum, C/E's visual
-    Top-K identities, and (when requested) D's minimum restricted to its five
-    FFT-selected windows.
+    Top-K identities, and (when requested) D's minimum restricted to its up to
+    five FFT-selected windows.
     """
 
     tokens = _patch_tokens(visual_windows)
@@ -431,11 +431,25 @@ def paired_joint_patch_scores(
 
 @dataclass(frozen=True)
 class GuidedWindowPool:
-    """Variant D's frequency-selected windows inside the common visual pool."""
+    """Ragged frequency-selected windows inside the common visual pool."""
 
     window_ids: torch.Tensor
     valid: torch.Tensor
     frequency_distances: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if self.window_ids.ndim != 2:
+            raise ValueError("window_ids must have shape [query, candidates]")
+        if self.valid.shape != self.window_ids.shape:
+            raise ValueError("valid shape differs from window_ids")
+        if self.frequency_distances.shape != self.window_ids.shape:
+            raise ValueError("frequency_distances shape differs from window_ids")
+        if not torch.equal(self.valid, self.window_ids >= 0):
+            raise ValueError("valid mask and padded window IDs disagree")
+        if torch.any(self.valid.sum(dim=1) == 0):
+            raise ValueError("every query must have a guided reference window")
+        if not torch.isinf(self.frequency_distances[~self.valid]).all():
+            raise ValueError("padded frequency distances must be infinite")
 
     def ids_for(self, query_window: int) -> torch.Tensor:
         return self.window_ids[query_window, self.valid[query_window]]
@@ -447,7 +461,13 @@ def select_fft_guided_windows(
     *,
     selected_windows: int = GUIDED_WINDOWS,
 ) -> GuidedWindowPool:
-    """Select five FFT-nearest windows from each query's common visual pool."""
+    """Select up to five FFT-nearest windows from the common visual pool.
+
+    Short series can have fewer than ``selected_windows`` eligible references
+    for central queries. Such rows retain every available non-overlapping
+    reference and are padded with ``-1`` IDs, an explicit validity mask, and
+    infinite distances.
+    """
 
     if selected_windows < 1:
         raise ValueError("selected_windows must be positive")
@@ -456,16 +476,21 @@ def select_fft_guided_windows(
     rows_values = []
     for query in range(feature.shape[0]):
         ids = common_pool.ids_for(query)
-        if ids.numel() < selected_windows:
+        if ids.numel() < 1:
             raise ValueError(
-                f"FFT-guided matching requires {selected_windows} non-overlapping "
-                f"candidate windows; query {query} has {ids.numel()}"
+                "FFT-guided matching requires a non-overlapping candidate; "
+                f"query {query} has none"
             )
         distances = cosine_distance(feature[query : query + 1].unsqueeze(0), feature[ids])[0, 0]
+        count = min(selected_windows, ids.numel())
         values, positions = distances.topk(
-            selected_windows, largest=False, sorted=True
+            count, largest=False, sorted=True
         )
         chosen = ids[positions]
+        if count < selected_windows:
+            padding = selected_windows - count
+            chosen = torch.cat([chosen, chosen.new_full((padding,), -1)])
+            values = torch.cat([values, values.new_full((padding,), torch.inf)])
         rows_ids.append(chosen)
         rows_values.append(values)
     window_ids = torch.stack(rows_ids)
@@ -664,12 +689,6 @@ class PairedVFGBackend:
                 "paired B-E variants require at least 8 windows (616 points) so every "
                 "query has a non-overlapping reference"
             )
-        if any(letter == "D" for letter in letters.values()) and n_windows < 12:
-            raise ValueError(
-                "paired D requires at least 12 windows (840 points) so every query "
-                "has five non-overlapping candidates"
-            )
-
         stable_started = self._clock()
         large_map = stable_scale_map(
             features["large"], features["large_mask"], device=self.device
@@ -711,11 +730,16 @@ class PairedVFGBackend:
 
         guided_pool = None
         guided_selection_seconds = 0.0
+        guided_min_selected = 0
+        guided_max_selected = 0
         if any(letter == "D" for letter in letters.values()):
             assert common_pool is not None and fft is not None
             started = self._clock()
             guided_pool = select_fft_guided_windows(fft, common_pool)
             guided_selection_seconds = self._clock() - started
+            guided_counts = guided_pool.valid.sum(dim=1)
+            guided_min_selected = int(guided_counts.min().item())
+            guided_max_selected = int(guided_counts.max().item())
 
         visual_cache = None
         visual_matching_seconds = 0.0
@@ -760,7 +784,7 @@ class PairedVFGBackend:
                 base = visual_cache.guided_visual_scores
                 incremental_matching = guided_selection_seconds
                 incremental_frequency = fft_seconds
-                semantics = "fft_guided_five_windows_then_visual_nn"
+                semantics = "fft_guided_up_to_five_windows_then_visual_nn"
             else:
                 assert visual_cache is not None and stft is not None
                 started = self._clock()
@@ -791,6 +815,13 @@ class PairedVFGBackend:
                 "overlap_exclusion_window_index_radius": OVERLAP_RADIUS,
                 "max_common_visual_windows": MAX_COMMON_WINDOWS,
                 "fft_guided_selected_windows": GUIDED_WINDOWS if letter == "D" else 0,
+                "fft_guided_target_windows": GUIDED_WINDOWS if letter == "D" else 0,
+                "fft_guided_min_selected_windows": (
+                    guided_min_selected if letter == "D" else 0
+                ),
+                "fft_guided_max_selected_windows": (
+                    guided_max_selected if letter == "D" else 0
+                ),
                 "shared_visual_pool_seconds": pool_seconds,
                 "shared_visual_patch_distance_seconds": visual_matching_seconds,
                 "incremental_matching_seconds": incremental_matching,

@@ -25,6 +25,12 @@ DEFAULT_CONFIG = HERE / "config.json"
 DEFAULT_DATA_ROOT = Path("/home/pengxf/jim/VLM4TS/data")
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data/runs/vfg_paired_20261027"
 DEFAULT_BACKEND = "src.models.vfg_paired_vit4ts"
+YAHOO_DIRS = {
+    "YAHOOA1": "A1Benchmark",
+    "YAHOOA2": "A2Benchmark",
+    "YAHOOA3": "A3Benchmark",
+    "YAHOOA4": "A4Benchmark",
+}
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -74,22 +80,58 @@ def publish_npz_no_replace(path: Path, **arrays: Any) -> bool:
         temporary.unlink(missing_ok=True)
 
 
+def load_dataset_index(data_root: Path) -> dict[str, tuple[str, ...]]:
+    """Read the authoritative signal names used by the original protocol."""
+    with (data_root / "datasets.csv").open(newline="", encoding="utf-8") as handle:
+        return {name: tuple(ast.literal_eval(signals)) for name, signals in csv.reader(handle)}
+
+
+def signal_path(data_root: Path, dataset: str, signal: str) -> Path:
+    if dataset in YAHOO_DIRS:
+        return data_root / "Yahoo_S5" / YAHOO_DIRS[dataset] / f"{signal}.csv"
+    return data_root / dataset / f"{signal}.csv"
+
+
 def discover_tasks(config: Mapping[str, Any], data_root: Path) -> list[tuple[str, str, Path]]:
+    dataset_index = load_dataset_index(data_root) if any(dataset in YAHOO_DIRS for dataset in config["datasets"]) else {}
     tasks = []
     for dataset in config["datasets"]:
-        paths = sorted((data_root / dataset).glob("*.csv"))
         expected = int(config["expected_signal_counts"][dataset])
-        if len(paths) != expected:
-            raise RuntimeError(f"{dataset}: expected {expected} signals, found {len(paths)}")
-        tasks.extend((dataset, path.stem, path) for path in paths)
+        if dataset in YAHOO_DIRS:
+            if dataset not in dataset_index:
+                raise RuntimeError(f"{dataset}: missing from {data_root / 'datasets.csv'}")
+            signals = dataset_index[dataset]
+            if len(signals) != len(set(signals)):
+                raise RuntimeError(f"{dataset}: duplicate signal names in datasets.csv")
+            entries = [(signal, signal_path(data_root, dataset, signal)) for signal in signals]
+        else:
+            entries = [(path.stem, path) for path in sorted((data_root / dataset).glob("*.csv"))]
+        missing = [str(path) for _, path in entries if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(f"{dataset}: indexed signal file missing: {missing[0]}")
+        if len(entries) != expected:
+            raise RuntimeError(f"{dataset}: expected {expected} signals, found {len(entries)}")
+        tasks.extend((dataset, signal, path) for signal, path in entries)
     return tasks
 
 
-def load_signal(path: Path) -> pd.DataFrame:
+def load_signal(path: Path, dataset: str | None = None) -> pd.DataFrame:
     frame = pd.read_csv(path)
-    if not {"timestamp", "value"}.issubset(frame.columns):
-        raise ValueError(f"{path} must contain timestamp and value")
-    frame = frame[["timestamp", "value"]].sort_values("timestamp", kind="stable").reset_index(drop=True)
+    if "value" not in frame:
+        raise ValueError(f"{path} must contain value")
+    if dataset in YAHOO_DIRS:
+        # Orion's anomalies.csv stores one-based row positions for every Yahoo
+        # benchmark. A1/A2 use ``timestamp`` and ``is_anomaly`` while A3/A4
+        # use ``timestamps`` and ``anomaly``; neither source label column is an
+        # input to this unsupervised detector.
+        frame = pd.DataFrame({
+            "timestamp": np.arange(1, len(frame) + 1, dtype=np.int64),
+            "value": frame["value"].to_numpy(),
+        })
+    else:
+        if "timestamp" not in frame:
+            raise ValueError(f"{path} must contain timestamp and value")
+        frame = frame[["timestamp", "value"]].sort_values("timestamp", kind="stable").reset_index(drop=True)
     if frame.empty or frame.isna().any().any() or not np.isfinite(frame["value"].to_numpy(dtype=float)).all():
         raise ValueError(f"Empty or non-finite input: {path}")
     return frame
@@ -210,14 +252,17 @@ def run(args: argparse.Namespace) -> int:
     if args.dry_run:
         cache_files = 0
         for dataset, signal, path in tasks:
-            length = len(load_signal(path))
+            length = len(load_signal(path, dataset))
             window_size = int(config["model"]["window_size"])
             step_size = int(config["model"]["step_size"])
             if length < window_size:
                 raise ValueError(f"Signal shorter than one window: {path}")
             n_windows = 1 + (length - window_size) // step_size
             letters = {name.split("_", 1)[0].upper() for name in variants}
-            required = 12 if "D" in letters else 8 if letters - {"A"} else 1
+            # The paired backend pads D's guided pool when fewer than five
+            # eligible windows exist, so every B-E variant has the same
+            # eight-window minimum.
+            required = 8 if letters - {"A"} else 1
             if n_windows < required:
                 raise ValueError(
                     f"{dataset}/{signal} has {n_windows} windows; requested variants "
@@ -234,7 +279,7 @@ def run(args: argparse.Namespace) -> int:
     backend = None
     state: dict[str, Any] = {}
     for ordinal, (dataset, signal, path) in enumerate(tasks, 1):
-        data = load_signal(path)
+        data = load_signal(path, dataset)
         score_dir = args.output_root / "point_scores" / dataset / signal
         metric_dir = args.output_root / "metrics" / dataset / signal
         missing = [name for name in variants if not (score_dir / f"{name}.npz").exists()]

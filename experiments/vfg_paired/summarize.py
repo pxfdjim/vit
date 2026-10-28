@@ -21,7 +21,13 @@ DEFAULT_DATA_ROOT = Path("/home/pengxf/jim/VLM4TS/data")
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data/runs/vfg_paired_20261027"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-from experiments.vfg_paired.runner import load_json, overlap, publish_bytes_no_replace
+from experiments.vfg_paired.runner import (
+    load_json,
+    load_signal,
+    overlap,
+    publish_bytes_no_replace,
+    signal_path,
+)
 
 
 def publish_csv(path: Path, frame: pd.DataFrame) -> bool:
@@ -85,16 +91,38 @@ def completion_table(results: pd.DataFrame, config: Mapping[str, Any]) -> pd.Dat
             found = results[(results.dataset == dataset) & (results.model == model)].signal.nunique()
             expected = int(config["expected_signal_counts"][dataset])
             rows.append({"dataset": dataset, "model": model, "completed_signals": found, "expected_signals": expected, "complete": found == expected})
+    expected_total = sum(int(config["expected_signal_counts"][dataset]) for dataset in config["datasets"])
+    total_label = f"ALL_{expected_total}"
     for model in config["variants_order"]:
         found = len(results[results.model == model][["dataset", "signal"]].drop_duplicates())
-        rows.append({"dataset": "ALL_125", "model": model, "completed_signals": found, "expected_signals": 125, "complete": found == 125})
+        rows.append({"dataset": total_label, "model": model, "completed_signals": found, "expected_signals": expected_total, "complete": found == expected_total})
     return pd.DataFrame(rows)
+
+
+def macro_scopes(config: Mapping[str, Any]) -> dict[str, list[str]]:
+    configured = config.get("macro_scopes")
+    if configured is not None:
+        scopes = {str(name): list(datasets) for name, datasets in configured.items()}
+    else:
+        scopes = {}
+        if config.get("real_datasets"):
+            real = list(config["real_datasets"])
+            scopes[f"real_{len(real)}"] = real
+        datasets = list(config["datasets"])
+        scopes[f"all_{len(datasets)}"] = datasets
+    known = set(config["datasets"])
+    for name, datasets in scopes.items():
+        unknown = sorted(set(datasets) - known)
+        if unknown:
+            raise ValueError(f"macro scope {name} contains unknown datasets: {unknown}")
+        if not datasets:
+            raise ValueError(f"macro scope {name} is empty")
+    return scopes
 
 
 def macro_table(best: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
     rows = []
-    scopes = {"real_6": config["real_datasets"], "all_7": config["datasets"]}
-    for scope, datasets in scopes.items():
+    for scope, datasets in macro_scopes(config).items():
         part = best[best.dataset.isin(datasets)]
         for model in config["variants_order"]:
             selected = part[part.model == model]
@@ -111,7 +139,7 @@ def comparisons(best: pd.DataFrame, macro: pd.DataFrame, config: Mapping[str, An
             if all(key in indexed.index for key in keys):
                 left = float(indexed.loc[keys[0], "f1_max"]); right = float(indexed.loc[keys[1], "f1_max"])
                 rows.append({"scope": "dataset", "dataset": dataset, "comparison": spec["name"], "left": spec["left"], "right": spec["right"], "left_f1max": left, "right_f1max": right, "delta_f1max": left - right})
-        for scope in ["real_6", "all_7"]:
+        for scope in macro_scopes(config):
             left_row = macro[(macro.scope == scope) & (macro.model == spec["left"])]
             right_row = macro[(macro.scope == scope) & (macro.model == spec["right"])]
             if len(left_row) and len(right_row):
@@ -228,7 +256,7 @@ def failure_plots(events: pd.DataFrame, changes: pd.DataFrame, data_root: Path, 
     specs = {item["name"]: item for item in config["comparisons"]}
     for _, row in failures.iterrows():
         spec = specs[row.comparison]; dataset = row.dataset; signal = row.signal
-        source = pd.read_csv(data_root / dataset / f"{signal}.csv").sort_values("timestamp", kind="stable").reset_index(drop=True)
+        source = load_signal(signal_path(data_root, dataset, signal), dataset)
         arrays = {}
         for side in ["right", "left"]:
             model = spec[side]
@@ -254,6 +282,7 @@ def report(best: pd.DataFrame, macro: pd.DataFrame, changes: pd.DataFrame, event
         header = "| " + " | ".join(frame.columns) + " |\n| " + " | ".join("---" for _ in frame.columns) + " |"
         rows = ["| " + " | ".join(f"{value:.6f}" if isinstance(value, float) else str(value) for value in row) + " |" for row in frame.itertuples(index=False, name=None)]
         return "\n".join([header, *rows])
+    expected_total = sum(int(config["expected_signal_counts"][dataset]) for dataset in config["datasets"])
     return "\n".join([
         "# Paired visual-frequency ViT4TS results", "", "## Protocol", "", config["evaluation"]["selection_protocol"], "",
         "## Dataset F1-max and contextual counts", "", table(best[["dataset", "model", "best_alpha", "f1_max", "TP", "FP", "FN"]]), "",
@@ -262,7 +291,7 @@ def report(best: pd.DataFrame, macro: pd.DataFrame, changes: pd.DataFrame, event
         "## Cache-only incremental runtime", "",
         "These timings exclude CLIP image rendering and feature extraction. `mean_variant_incremental_seconds` summarizes the backend `inference_seconds`: incremental matching + incremental frequency + score recovery. Shared visual-window selection, shared Patch distances, Stable reference work, and score recovery are retained as separate columns; shared costs must not be summed once per variant as end-to-end runtime.", "",
         table(runtime), "", "## Matching and frequency incremental timing", "", table(incremental), "",
-        "## Completion", "", "Each complete model contains all 125 signals; the rows below are checked before final reporting.", "", table(completion), ""
+        "## Completion", "", f"Each complete model contains all {expected_total} configured signals; the rows below are checked before final reporting.", "", table(completion), ""
     ])
 
 

@@ -4,6 +4,10 @@
   "seed": 20261027,
   "datasets": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch"],
   "real_datasets": ["realTraffic", "realTweets", "SMAP", "MSL", "realAdExchange", "realAWSCloudwatch"],
+  "macro_scopes": {
+    "real_6": ["realTraffic", "realTweets", "SMAP", "MSL", "realAdExchange", "realAWSCloudwatch"],
+    "all_7": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch"]
+  },
   "expected_signal_counts": {
     "realTraffic": 7,
     "realTweets": 10,
