@@ -22,6 +22,7 @@ from experiments.vfg_paired.runner import load_json, publish_bytes_no_replace
 from experiments.vfg_paired.summarize import (
     event_changes,
     load_documents,
+    macro_scopes,
     publish_csv,
     publish_figure,
 )
@@ -51,7 +52,7 @@ def controlled_comparisons(best: pd.DataFrame, macro: pd.DataFrame, config: dict
     ]
     rows = []
     indexed = best.set_index(["dataset", "model"])
-    for scope, datasets in {"real_6": config["real_datasets"], "all_7": config["datasets"]}.items():
+    for scope, datasets in macro_scopes(config).items():
         for model in frequency_models:
             left = macro[(macro.scope == scope) & (macro.model == model)].iloc[0]
             right = macro[(macro.scope == scope) & (macro.model == baseline)].iloc[0]
@@ -73,7 +74,12 @@ def controlled_comparisons(best: pd.DataFrame, macro: pd.DataFrame, config: dict
     return pd.DataFrame(rows)
 
 
-def candidate_audit(documents: list[dict]) -> pd.DataFrame:
+def candidate_audit(documents: list[dict], config: dict) -> pd.DataFrame:
+    guided = {
+        (document["dataset"], document["signal"]): document["backend_metadata"]
+        for document in documents
+        if document["variant"] == "D_fft_guided_reference"
+    }
     rows = []
     for document in documents:
         if document["variant"] != "B_paired_visual":
@@ -81,14 +87,24 @@ def candidate_audit(documents: list[dict]) -> pd.DataFrame:
         windows = int(document["backend_metadata"]["n_windows"])
         counts = [sum(abs(query - ref) >= 4 for ref in range(windows)) for query in range(windows)]
         selected = [min(32, count) for count in counts]
+        d_metadata = guided[(document["dataset"], document["signal"])]
         rows.append({
             "dataset": document["dataset"], "signal": document["signal"], "n_windows": windows,
             "min_eligible_nonoverlap_windows": min(counts), "max_eligible_nonoverlap_windows": max(counts),
             "min_common_visual_pool": min(selected), "max_common_visual_pool": max(selected),
-            "D_selected_windows": 5,
+            "D_target_windows": int(d_metadata.get("fft_guided_target_windows", 5)),
+            "D_min_selected_windows": int(d_metadata.get("fft_guided_min_selected_windows", d_metadata.get("fft_guided_selected_windows", 5))),
+            "D_max_selected_windows": int(d_metadata.get("fft_guided_max_selected_windows", d_metadata.get("fft_guided_selected_windows", 5))),
         })
     frame = pd.DataFrame(rows).sort_values(["dataset", "signal"])
-    if len(frame) != 125 or frame.max_common_visual_pool.max() > 32 or frame.min_common_visual_pool.min() < 5:
+    expected = sum(int(config["expected_signal_counts"][name]) for name in config["datasets"])
+    if (
+        len(frame) != expected
+        or frame.max_common_visual_pool.max() > 32
+        or frame.min_common_visual_pool.min() < 1
+        or frame.D_min_selected_windows.min() < 1
+        or frame.D_max_selected_windows.max() > 5
+    ):
         raise RuntimeError("candidate-pool audit failed")
     return frame
 
@@ -106,7 +122,7 @@ def comparison_event_summary(documents: list[dict], best: pd.DataFrame, config: 
     _, per_dataset = event_changes(documents, best, local)
     totals = []
     for comparison, group in per_dataset.groupby("comparison", sort=False):
-        for scope, datasets in {"real_6": config["real_datasets"], "all_7": config["datasets"]}.items():
+        for scope, datasets in macro_scopes(config).items():
             part = group[group.dataset.isin(datasets)]
             totals.append({
                 "scope": scope, "comparison": comparison,
@@ -126,7 +142,8 @@ def plots(best: pd.DataFrame, macro: pd.DataFrame, controlled: pd.DataFrame, roo
     axis.set_ylim(0, 1); axis.grid(axis="y", alpha=.25); axis.legend(frameon=False, fontsize=8)
     figure.tight_layout(); publish_figure(root / "plots/dataset_f1max.png", figure); plt.close(figure)
 
-    view = controlled[controlled.scope.isin(["real_6", "all_7"])].pivot(index="model", columns="scope", values="delta_f1max")
+    scope_names = list(macro_scopes(config))
+    view = controlled[controlled.scope.isin(scope_names)].pivot(index="model", columns="scope", values="delta_f1max")
     figure, axis = plt.subplots(figsize=(8, 4.6))
     view.plot.bar(ax=axis, color=["#3B82F6", "#F59E0B"])
     axis.axhline(0, color="black", lw=.8); axis.set_ylabel("F1-max change versus paired visual B")
@@ -140,7 +157,7 @@ def run(args: argparse.Namespace) -> int:
     macro = pd.read_csv(args.output_root / "macro_f1max.csv")
     documents = load_documents(args.output_root)
     controlled = controlled_comparisons(best, macro, config)
-    candidates = candidate_audit(documents)
+    candidates = candidate_audit(documents, config)
     events = comparison_event_summary(documents, best, config)
     publish_csv(args.output_root / "controlled_frequency_vs_B.csv", controlled)
     publish_csv(args.output_root / "candidate_pool_audit.csv", candidates)
@@ -149,31 +166,41 @@ def run(args: argparse.Namespace) -> int:
 
     macro_view = macro[["scope", "model", "macro_f1max", "TP", "FP", "FN"]]
     dataset_view = best.pivot(index="dataset", columns="model", values="f1_max").reset_index()
-    controlled_view = controlled[controlled.scope.isin(["real_6", "all_7"])].copy()
+    scope_names = list(macro_scopes(config))
+    controlled_view = controlled[controlled.scope.isin(scope_names)].copy()
+    expected_signals = sum(int(config["expected_signal_counts"][name]) for name in config["datasets"])
+    primary_scope = scope_names[-1]
+    primary = macro[macro.scope == primary_scope].set_index("model")
+    b_minus_a = float(primary.loc["B_paired_visual", "macro_f1max"] - primary.loc["A_stable_median", "macro_f1max"])
+    frequency_delta = {
+        model: float(primary.loc[model, "macro_f1max"] - primary.loc["B_paired_visual", "macro_f1max"])
+        for model in ["C_paired_fft_joint", "D_fft_guided_reference", "E_paired_stft_joint"]
+    }
+    best_frequency = max(frequency_delta, key=lambda name: float(primary.loc[name, "macro_f1max"]))
+    ragged = candidates[candidates.D_min_selected_windows < candidates.D_target_windows]
     report = "\n".join([
         "# Paired visual-frequency ViT4TS: final analysis", "",
         "## Completion and protocol", "",
-        "All 125 series completed for A–E at α ∈ {0.1, 0.01, 0.001}. The evaluation first averages contextual F1 equally across series for each dataset/α, selects the dataset α with the largest mean, and then macro-averages datasets. `real_6` excludes `artificialWithAnomaly`; `all_7` includes it. CLIP features came from the existing frozen OpenAI ViT-B/16 cache. All methods use stable Harmonic aggregation.", "",
+        f"All {expected_signals} configured series completed for A–E at α ∈ {{0.1, 0.01, 0.001}}. The evaluation first averages contextual F1 equally across series for each dataset/α, selects the dataset α with the largest mean, and then macro-averages datasets in the configured scopes ({', '.join(scope_names)}). CLIP features use frozen OpenAI ViT-B/16. All methods use stable Harmonic aggregation.", "",
         "## Dataset F1-max", "", markdown_table(dataset_view), "",
         "## Macro results and contextual counts", "", markdown_table(macro_view), "",
         "## Frequency methods versus paired visual B", "", markdown_table(controlled_view), "",
         "## Event changes versus paired visual B", "", markdown_table(events), "",
         "## Findings", "",
-        "- B improves over A by 0.045362 on the six real datasets and 0.081428 over all seven datasets. This is evidence that the real-window reference library is useful, although B also increases the base-patch reference capacity from 196 median patches to as many as 32×196 real patches.",
-        "- C, D, and E change the six-real macro by -0.026969, -0.031283, and -0.009202 versus B. On all seven datasets the changes are -0.023116, -0.026814, and -0.007887. Thus none of the fixed frequency mechanisms improves the controlled paired-visual baseline.",
-        "- E is the strongest frequency variant by macro F1. It exceeds whole-window FFT C by 0.017768 on real_6 and 0.015229 on all_7, but remains below B. Local time alignment is less harmful than whole-window FFT here; it does not establish an independent frequency gain.",
-        "- D does not beat B or C in macro F1. Its comparison with C/E is partially confounded: D retains 5 windows (980 patches), whereas C/E retain 5 visual patches per query patch before frequency scoring.",
-        "- The controlled result does not support the claim that frequency information improves ViT4TS under this fixed design. The most effective tested matching mechanism is paired visual B. Among frequency-bearing methods, E is best.", "",
+        f"- In `{primary_scope}`, paired visual B changes macro F1 by {b_minus_a:+.6f} versus stable median A. B also increases the base-patch reference capacity from 196 median patches to as many as 32×196 real patches.",
+        f"- Against the controlled paired-visual B baseline, C, D, and E change `{primary_scope}` macro F1 by {frequency_delta['C_paired_fft_joint']:+.6f}, {frequency_delta['D_fft_guided_reference']:+.6f}, and {frequency_delta['E_paired_stft_joint']:+.6f}.",
+        f"- The strongest frequency-bearing method is `{best_frequency}`. " + ("It exceeds B in this scope." if frequency_delta[best_frequency] > 0 else "It remains below B in this scope, so these fixed experiments do not establish an independent frequency gain."),
+        f"- D uses up to five frequency-selected windows. {len(ragged)} series required fewer than five for at least one query; all retained references remain non-overlapping.", "",
         "## Interpretation limits", "",
         "- B–E share the same initial visual pool and exclude the current and overlapping windows with |q-r| ≥ 4. The exclusion applies to the base 14×14 patch branch; the retained large/mid branches still use the original all-window median reference, so the full model is transductive.",
         "- Labels enter only contextual F1-max evaluation and post-hoc event/plot analysis. They are not used in candidate selection, distance calibration, λ, K, or frequency construction.",
         "- Runtime tables are cache-only component diagnostics. They exclude CLIP and image rendering, and shared work is amortized differently across variants; they must not be used as an end-to-end speed ranking.",
-        "- `candidate_pool_audit.csv` verifies all 125 series, the ≤32 initial pool, ≥5 non-overlapping candidates, and D's fixed 5-window selection.", "",
+        f"- `candidate_pool_audit.csv` verifies all {expected_signals} series, the ≤32 initial pool, at least one non-overlapping candidate, and D's 1–5-window selection.", "",
         "## Artifacts", "",
         "- `results.csv`, `dataset_f1max.csv`, `macro_f1max.csv`: complete evaluation results.",
         "- `controlled_frequency_vs_B.csv`, `controlled_frequency_events.csv`: controlled frequency effects and event accounting.",
         "- `candidate_pool_audit.csv`: per-series candidate counts.",
-        "- `point_scores/`: all 625 point-score arrays.",
+        f"- `point_scores/`: all {expected_signals * len(config['variants_order'])} point-score arrays.",
         "- `plots/dataset_f1max.png`, `plots/frequency_vs_paired_visual.png`, `plots/failures/`: comparison and failure figures.",
         "- `runtime.csv`, `incremental_timing.csv`: cache-only component timing and memory.", "",
     ])

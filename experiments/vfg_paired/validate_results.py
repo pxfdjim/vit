@@ -23,7 +23,10 @@ def run(args: argparse.Namespace) -> int:
     config = load_json(args.config)
     metric_paths = sorted((args.output_root / "metrics").glob("*/*/*.json"))
     score_paths = sorted((args.output_root / "point_scores").glob("*/*/*.npz"))
-    expected = 125 * len(config["variants_order"])
+    expected_signals = sum(
+        int(config["expected_signal_counts"][dataset]) for dataset in config["datasets"]
+    )
+    expected = expected_signals * len(config["variants_order"])
     if len(metric_paths) != expected or len(score_paths) != expected:
         raise RuntimeError(f"expected {expected} metrics/scores, found {len(metric_paths)}/{len(score_paths)}")
 
@@ -60,7 +63,17 @@ def run(args: argparse.Namespace) -> int:
     if not completion["complete"].all():
         raise RuntimeError("completion.csv contains an incomplete group")
     candidates = pd.read_csv(args.output_root / "candidate_pool_audit.csv")
-    if len(candidates) != 125 or candidates.max_common_visual_pool.max() > 32 or candidates.min_common_visual_pool.min() < 5:
+    d_min = candidates.get("D_min_selected_windows", candidates.get("D_selected_windows"))
+    d_max = candidates.get("D_max_selected_windows", candidates.get("D_selected_windows"))
+    if d_min is None or d_max is None:
+        raise RuntimeError("candidate-pool audit lacks D selection counts")
+    if (
+        len(candidates) != expected_signals
+        or candidates.max_common_visual_pool.max() > 32
+        or candidates.min_common_visual_pool.min() < 1
+        or d_min.min() < 1
+        or d_max.max() > 5
+    ):
         raise RuntimeError("candidate-pool audit failed")
 
     payload = {
@@ -72,7 +85,8 @@ def run(args: argparse.Namespace) -> int:
         "alphas": sorted(alpha_set, reverse=True),
         "all_point_scores_finite_and_aligned": True,
         "all_metric_values_finite": True,
-        "all_125_candidate_pools_valid": True,
+        "expected_signals": expected_signals,
+        "all_candidate_pools_valid": True,
         "maximum_absolute_A_score_difference_vs_previous_run": maximum_stable_difference if args.previous_root else None,
         "stable_reproduction_tolerance": 1e-6 if args.previous_root else None,
         "stable_reproduction_passed": maximum_stable_difference <= 1e-6 if args.previous_root else None,
