@@ -39,18 +39,18 @@ class NumericPatchEncoder(nn.Module):
 class VisualColumnEncoder(nn.Module):
     def __init__(self, hidden: int = 192):
         super().__init__()
-        self.project = nn.Linear(768, hidden)
-        self.row_score = nn.Sequential(nn.Linear(hidden, 64), nn.Tanh(), nn.Linear(64, 1))
-        self.row_position = nn.Parameter(torch.zeros(1, 14, 1, hidden))
-        self.col_position = nn.Parameter(torch.zeros(1, 1, 14, hidden))
-        self.norm = nn.LayerNorm(hidden)
+        # A fixed Johnson-Lindenstrauss projection preserves the complete
+        # vertical Patch column.  Keeping this target fixed prevents the two
+        # trainable modalities from jointly collapsing to a constant vector.
+        generator = torch.Generator().manual_seed(20261029)
+        projection = torch.randn(14 * 768, hidden, generator=generator)
+        projection = projection / (14 * 768) ** 0.5
+        self.register_buffer("projection", projection)
 
     def forward(self, visual: torch.Tensor) -> torch.Tensor:
-        grid = visual.reshape(-1, 14, 14, 768)
-        h = self.project(grid) + self.row_position + self.col_position
-        # Pool only the vertical axis; the 14 temporal columns stay ordered.
-        weights = torch.softmax(self.row_score(h), dim=1)
-        return F.normalize(self.norm((weights * h).sum(dim=1)), dim=-1)
+        grid = visual.reshape(-1, 14, 14, 768).permute(0, 2, 1, 3)
+        h = grid.reshape(grid.shape[0], 14, 14 * 768) @ self.projection
+        return F.normalize(F.layer_norm(h, (h.shape[-1],)), dim=-1)
 
 
 class AlignedMultimodalReference(nn.Module):

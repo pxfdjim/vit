@@ -58,7 +58,7 @@ def costs(root):
   d=json.loads(p.read_text()); t=d['timing']; rows.append({'variant':d['variant'],'inference_seconds':t.get('inference_seconds',0),'shared_seconds':t.get('shared_encoding_and_cost_seconds',0),'peak':d.get('peak_cuda_memory_bytes') or 0})
  runtime=pd.DataFrame(rows).groupby('variant',as_index=False).agg(mean_incremental_seconds=('inference_seconds','mean'),mean_shared_seconds=('shared_seconds','mean'),peak_cuda_memory_bytes=('peak','max'))
  training=[]
- for p in sorted(Path('/home/pengxf/jim/VLM4TS/data/cache/vetime_bimodal_20261029/checkpoints').glob('*.pt')):
+ for p in sorted(Path('/home/pengxf/jim/VLM4TS/data/cache/vetime_bimodal_v2_20261029/checkpoints').glob('*.pt')):
   d=torch.load(p,map_location='cpu',weights_only=True); training.append({'checkpoint':p.stem,'train_windows':d['train_windows'],'dev_windows':d['dev_windows'],'training_seconds':d['elapsed_seconds'],'peak_cuda_memory_bytes':d['peak_cuda_memory_bytes'],'final_train_loss':d['history'][-1]['total'],'final_dev_loss':d['history'][-1]['dev_total']})
  return runtime,pd.DataFrame(training)
 def main(a):
@@ -66,6 +66,9 @@ def main(a):
  for f,n in [(rows,'results.csv'),(means,'dataset_f1_by_alpha.csv'),(best,'dataset_f1max.csv'),(macro,'macro_f1max.csv'),(mech,'mechanism_per_signal.csv'),(mechsum,'mechanism_summary.csv'),(events,'event_changes.csv'),(runtime,'runtime.csv'),(training,'training_summary.csv')]: f.to_csv(root/n,index=False)
  m=macro.pivot(index='variant',columns='scope',values='macro_f1max').reindex(config['variants_order']); counts=macro[macro.scope=='all_11'][['variant','TP','FP','FN']]
  per=best.pivot(index='dataset',columns='variant',values='f1_max').reindex(config['datasets']); delta=best.pivot(index='dataset',columns='variant',values='delta_vs_T3').reindex(config['datasets'])
+ focus=best[best.variant.isin(['T3','AMR_full'])].pivot(index='dataset',columns='variant',values=['f1_max','TP','FP','FN']).reindex(config['datasets'])
+ focus.columns=['_'.join(map(str,x)) for x in focus.columns]
+ focus['delta_AMR_minus_T3']=focus['f1_max_AMR_full']-focus['f1_max_T3']
  primary=macro[(macro.scope=='all_11')].set_index('variant').macro_f1max; full=float(primary.AMR_full); t3=float(primary.T3)
  real=float(m.loc['AMR_full','real_6']); yahoo=float(m.loc['AMR_full','yahoo_4'])
  ref=float(mechsum[mechsum.variant=='AMR_full'].reference_change_fraction.iloc[0]); path=float(mechsum[mechsum.variant=='AMR_full'].path_change_fraction.iloc[0])
@@ -84,6 +87,7 @@ def main(a):
  'At inference, the learned cost only selects a reference and DTW path. The reported anomaly score is always the original T3 visual distance along that selected path. `TS_only` uses the trained numeric cost alone; `Late_joint` combines calibrated visual and numeric costs; `AMR_full` combines visual cost with cross-attended fused-token cost; `AMR_no_reference_loss` removes the window-reference geometry objective.',
  '', '## Macro F1-max','',md(m),'','### All-11 contextual counts','',md(counts,index=False),'',
  '## Per-dataset F1-max','',md(per),'','### Change relative to T3','',md(delta),'',
+ '### T3 and full-model per-dataset counts','',md(focus),'',
  '## Reference and path mechanism','',md(mechsum,index=False),'',
  f'`AMR_full` changes the selected reference in `{ref:.2%}` of query windows and changes the exact DTW path in `{path:.2%}`. Because final scores remain visual-only, all performance changes arise from learned reference routing and alignment.',
  '', '## Event and false-positive changes','',md(events,index=False),'',
@@ -102,7 +106,7 @@ def main(a):
   lines+=['The model raises All-11 but does not preserve the T3 Real-6 baseline. The improvement is therefore not a stable general replacement; retain T3 for real-data use and treat the learned selector as an ablation result.']
  else:
   lines+=['Targeted self-supervised training does not produce a stable improvement over T3. Any controlled ablation gains are reported above, but the trained branch should not replace T3. The result indicates that cross-signal representation alignment is insufficient to choose better within-signal normal references under the present protocol.']
- lines+=['','## Reproducibility','','- Code commit: `0eafb7c` plus the final reporting fix commit recorded in Git.','- Project-only training cache: `data/cache/vetime_bimodal_20261029/project_training_cache.pt`.','- Six cross-fit checkpoints: `data/cache/vetime_bimodal_20261029/checkpoints/`.','- Raw point scores and CSV tables are retained beside this report for audit; this Markdown file is the sole narrative deliverable.']
+ lines+=['','## Reproducibility','','- Detector/config commit is recorded with the run.','- Project-only training cache: `data/cache/vetime_bimodal_20261029/project_training_cache.pt`.','- Six cross-fit checkpoints: `data/cache/vetime_bimodal_v2_20261029/checkpoints/`.','- Raw point scores and CSV tables are retained beside this report for audit; this Markdown file is the sole narrative deliverable.']
  (root/'vetime_bimodal_final_report.md').write_text('\n'.join(lines)+'\n')
  print(macro.to_string(index=False)); print(root/'vetime_bimodal_final_report.md')
 if __name__=='__main__':
