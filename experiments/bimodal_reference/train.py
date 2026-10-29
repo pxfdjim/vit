@@ -10,11 +10,14 @@ from src.models.bimodal_reference import AlignedMultimodalReference, ModelConfig
 def main():
  p=argparse.ArgumentParser(); p.add_argument('--cache',type=Path,required=True); p.add_argument('--output',type=Path,required=True)
  p.add_argument('--device',default='cuda:0'); p.add_argument('--seed',type=int,default=20261029)
- p.add_argument('--epochs',type=int,default=16); p.add_argument('--batch-size',type=int,default=64)
+ p.add_argument('--epochs',type=int,default=16); p.add_argument('--batch-size',type=int,default=64); p.add_argument('--eval-fold',type=int,required=True)
  p.add_argument('--no-reference-loss',action='store_true'); a=p.parse_args()
  random.seed(a.seed); np.random.seed(a.seed); torch.manual_seed(a.seed); torch.cuda.manual_seed_all(a.seed)
- data=torch.load(a.cache,map_location='cpu',weights_only=False); split=np.asarray(data['split'])
- train_idx=torch.from_numpy(np.flatnonzero(split=='train')); dev_idx=torch.from_numpy(np.flatnonzero(split=='dev'))
+ data=torch.load(a.cache,map_location='cpu',weights_only=False); records=json.loads(data['records_json'])
+ folds=np.asarray([r['fold'] for r in records]); dev=np.asarray([r['dev'] for r in records],bool)
+ # Evaluation fold is never read. Development signals are held out from the
+ # remaining two folds and the final epoch is fixed regardless of dev loss.
+ train_idx=torch.from_numpy(np.flatnonzero((folds!=a.eval_fold)&(~dev))); dev_idx=torch.from_numpy(np.flatnonzero((folds!=a.eval_fold)&dev))
  train=TensorDataset(data['raw'][train_idx],data['visual'][train_idx].float())
  dev=TensorDataset(data['raw'][dev_idx],data['visual'][dev_idx].float())
  generator=torch.Generator().manual_seed(a.seed)

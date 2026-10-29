@@ -16,6 +16,9 @@ from src.models.vfg_paired_vit4ts import GRID_SIZE,MAX_COMMON_WINDOWS,OVERLAP_RA
 
 EPS=1e-8
 
+def _fold_id(dataset,signal):
+ return int(hashlib.sha256(f'{dataset}/{signal}'.encode()).hexdigest()[:8],16)%3
+
 def _standardized_windows(raw):
  y=np.asarray(detrend(np.asarray(raw,np.float64)),np.float64); med=np.median(y)
  mad=1.4826*np.median(np.abs(y-med)); q1,q3=np.quantile(y,[.25,.75]); scale=max(mad,(q3-q1)/1.349,np.std(y)*.1,EPS)
@@ -55,7 +58,8 @@ class BimodalReferenceBackend:
   self.final_cache_roots=[Path(x) for x in ([roots] if isinstance(roots,(str,Path)) else roots)]
   checkpoints=self.model_config.get('checkpoints',{})
   self.models={name:load_model(path,self.device)[0] for name,path in checkpoints.items()}
-  if 'full' not in self.models or 'no_reference' not in self.models: raise ValueError('full and no_reference checkpoints required')
+  expected={f'fold{fold}_{kind}' for fold in range(3) for kind in ('full','no_reference')}
+  if set(self.models)!=expected: raise ValueError(f'expected cross-fit checkpoints: {expected}')
  def _clock(self):
   if self.device.type=='cuda': torch.cuda.synchronize(self.device)
   return time.perf_counter()
@@ -73,8 +77,10 @@ class BimodalReferenceBackend:
   started=self._clock(); visual=_visual_costs(patch.reshape(nw,14,14,-1),pool)
   base=match_paths(visual,pool,band=2,penalty_scale=.1); baseline_scores=.5*base.scores.to(self.device)
   raw_windows=_standardized_windows(raw).to(self.device)
+  fold=_fold_id(context['dataset'],context['signal'])
+  active={kind:self.models[f'fold{fold}_{kind}'] for kind in ('full','no_reference')}
   encoded={}
-  for key,model in self.models.items():
+  for key,model in active.items():
    output=model(raw_windows,patch)
    encoded[key]=output['numeric'],output['fused']
   costsets={}
@@ -103,7 +109,7 @@ class BimodalReferenceBackend:
      'candidate_pool_digest':pool_digest,'reference_change_fraction':float(ref_changed.float().mean()),'path_change_fraction':float(path_changed.float().mean()),
      'learned_cost_scales':scales.get(str(spec.get('checkpoint','full')),{}),'shared_encoding_and_cost_seconds':shared_seconds,
      'matching_seconds':elapsed,'inference_seconds':elapsed,'n_windows':nw,'input_digest':digest[:20],'final_cache_path':str(fp),'block_cache_path':str(bp),
-     'final_anomaly_evidence':'T3_visual_only','max_common_visual_windows':MAX_COMMON_WINDOWS,'overlap_radius':OVERLAP_RADIUS},
+     'final_anomaly_evidence':'T3_visual_only','cross_fit_eval_fold':fold,'max_common_visual_windows':MAX_COMMON_WINDOWS,'overlap_radius':OVERLAP_RADIUS},
     'timing':{'shared_encoding_and_cost_seconds':shared_seconds,'matching_seconds':elapsed,'inference_seconds':elapsed},
     'diagnostics':{'reference_window_ids':_diagnostic_numpy(match.reference_ids),'reference_columns':_diagnostic_numpy(match.reference_columns),
      'visual_local_costs':_diagnostic_numpy(local),'t3_reference_window_ids':_diagnostic_numpy(base.reference_ids),

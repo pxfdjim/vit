@@ -78,32 +78,35 @@ class AlignedMultimodalReference(nn.Module):
 
 
 def patch_alignment_loss(outputs: dict[str, torch.Tensor], include_reference: bool = True):
-    """Correspondence and reference-identity objectives, with no anomaly labels."""
+    """Correspondence and reference-geometry objectives, with no negatives.
+
+    Periodic windows can be semantically equivalent after a temporal shift, so
+    other windows/columns are never declared negatives.  Instead the trainable
+    time branch learns the frozen visual branch's pairwise geometry.
+    """
     n, v, f = outputs["numeric"], outputs["visual"], outputs["fused"]
     batch, columns, _ = n.shape
-    temperature = 0.1
-    # Within-window Patch correspondence: correct time column is the class.
-    logits_nv = torch.einsum("bid,bjd->bij", n, v) / temperature
-    labels = torch.arange(columns, device=n.device).repeat(batch)
-    local = 0.5 * (F.cross_entropy(logits_nv.reshape(-1, columns), labels) +
-                   F.cross_entropy(logits_nv.transpose(1, 2).reshape(-1, columns), labels))
+    # Exact visual/numeric time correspondence plus full within-window relation
+    # geometry.  Repeated phases may remain similar; no off-diagonal is forced
+    # to be dissimilar.
+    local = (1.0 - (n * v).sum(-1)).mean()
+    numeric_geometry = torch.einsum("bid,bjd->bij", n, n)
+    visual_geometry = torch.einsum("bid,bjd->bij", v, v)
+    structure = F.smooth_l1_loss(numeric_geometry, visual_geometry)
     # Adjacent smoothness must agree across modalities, while retaining change magnitude.
     dn = 1.0 - (n[:, 1:] * n[:, :-1]).sum(-1)
     dv = 1.0 - (v[:, 1:] * v[:, :-1]).sum(-1)
     transition = F.smooth_l1_loss(dn, dv)
     reference = torch.zeros((), device=n.device)
     if include_reference and batch > 1:
-        # Same-window visual/numeric summaries identify compatible references;
-        # all other independent UCR windows in the batch are negatives.
+        # Match pairwise reference geometry without calling any pair negative.
         ng, vg = F.normalize(n.mean(1), dim=-1), F.normalize(v.mean(1), dim=-1)
-        logits = ng @ vg.T / temperature
-        target = torch.arange(batch, device=n.device)
-        reference = 0.5 * (F.cross_entropy(logits, target) + F.cross_entropy(logits.T, target))
+        reference = F.smooth_l1_loss(ng @ ng.T, vg @ vg.T)
     # Prevent fused tokens from losing their exact time correspondence.
     fused_align = 1.0 - (f * 0.5 * (n + v)).sum(-1).mean()
-    total = local + 0.25 * transition + 0.5 * reference + 0.25 * fused_align
+    total = local + 0.5 * structure + 0.25 * transition + 0.5 * reference + 0.25 * fused_align
     return total, {"local": local, "transition": transition,
-                   "reference": reference, "fused": fused_align}
+                   "structure": structure, "reference": reference, "fused": fused_align}
 
 
 @dataclass(frozen=True)
