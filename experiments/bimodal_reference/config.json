@@ -24,11 +24,11 @@
   },
   "cache": {"reuse_existing": true, "never_replace": true},
   "variants": {
-    "T3": {"selector": "T3", "checkpoint": "full"},
-    "TS_only": {"selector": "TS_ONLY", "checkpoint": "full"},
-    "Late_joint": {"selector": "LATE_JOINT", "checkpoint": "full"},
-    "AMR_full": {"selector": "CROSS_MODAL", "checkpoint": "full"},
-    "AMR_no_reference_loss": {"selector": "CROSS_MODAL", "checkpoint": "no_reference"}
+    "T3": {"family": "T3", "selector": "T3", "checkpoint": "full"},
+    "TS_only": {"family": "T3", "selector": "TS_ONLY", "checkpoint": "full"},
+    "Late_joint": {"family": "T3", "selector": "LATE_JOINT", "checkpoint": "full"},
+    "AMR_full": {"family": "T3", "selector": "CROSS_MODAL", "checkpoint": "full"},
+    "AMR_no_reference_loss": {"family": "T3", "selector": "CROSS_MODAL", "checkpoint": "no_reference"}
   },
   "variants_order": ["T3", "TS_only", "Late_joint", "AMR_full", "AMR_no_reference_loss"]
 }
