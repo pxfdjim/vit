@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Fixed self-supervised training on independent UCR normal prefixes."""
 from __future__ import annotations
-import argparse, json, random, time
+import argparse, json, random, time, sys
 from pathlib import Path
 import numpy as np, torch
 from torch.utils.data import DataLoader, TensorDataset
+ROOT=Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 from src.models.bimodal_reference import AlignedMultimodalReference, ModelConfig, patch_alignment_loss
 
 def main():

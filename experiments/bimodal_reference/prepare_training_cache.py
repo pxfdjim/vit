@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Sample project signals and reuse immutable Block-6 features for training."""
 from __future__ import annotations
-import argparse, hashlib, json
+import argparse, hashlib, json, sys
 from pathlib import Path
 import numpy as np, torch
 from scipy.signal import detrend
+
+ROOT=Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 
 from experiments.temporal_matching.runner import discover_tasks, load_json, load_signal
 from src.models.curve_aware_clip import input_digest,intermediate_cache_path,expected_window_count,validate_intermediate_cache

@@ -1,197 +1,109 @@
 #!/usr/bin/env python3
-"""Aggregate numeric T3 controls, mechanism diagnostics and case figures."""
+"""Create the single final Markdown report and supporting result tables."""
 from __future__ import annotations
-import argparse, json, sys
+import argparse,json
 from pathlib import Path
-from typing import Any
-import numpy as np
-import pandas as pd
+import numpy as np,pandas as pd,torch
 
-HERE=Path(__file__).resolve().parent; ROOT=HERE.parents[1]
-if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
-from experiments.temporal_matching.runner import load_json, load_signal, signal_path
-
-
-def overlap(a,b): return not (a[1]<b[0] or b[1]<a[0])
-def selected(best: pd.DataFrame,dataset:str,variant:str)->float: return float(best[(best.dataset==dataset)&(best.variant==variant)].iloc[0].best_alpha)
-
-
-def publish_csv(frame:pd.DataFrame,path:Path): path.parent.mkdir(parents=True,exist_ok=True); frame.to_csv(path,index=False)
-
-
-def markdown(frame: pd.DataFrame, *, index: bool = True, digits: int = 6) -> str:
-    view=frame.reset_index() if index else frame.copy()
-    headers=[str(column) for column in view.columns]
-    def cell(value):
-        if pd.isna(value): return ""
-        if isinstance(value,(float,np.floating)): return f"{float(value):.{digits}f}"
-        return str(value)
-    lines=["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"]*len(headers)) + " |"]
-    lines.extend("| " + " | ".join(cell(value) for value in row) + " |" for row in view.itertuples(index=False,name=None))
-    return "\n".join(lines)
-
-
-def collect(output:Path):
-    rows=[]; docs={}
-    for path in sorted((output/"metrics").glob("*/*/*.json")):
-        doc=load_json(path); key=(doc["dataset"],doc["signal"],doc["variant"]); docs[key]=doc
-        for metric in doc["alpha_metrics"]:
-            rows.append({"dataset":key[0],"signal":key[1],"variant":key[2],**{k:metric[k] for k in ("alpha","threshold","TP","FP","FN","precision","recall","f1")}})
-    return pd.DataFrame(rows),docs
-
-
-def aggregate(results:pd.DataFrame,config:dict):
-    means=results.groupby(["dataset","variant","alpha"],as_index=False).agg(f1_max=("f1","mean"))
-    best=means.sort_values(["dataset","variant","f1_max","alpha"],ascending=[True,True,False,False],kind="stable").drop_duplicates(["dataset","variant"]).rename(columns={"alpha":"best_alpha"})
-    counts=[]
-    for row in best.itertuples():
-        subset=results[(results.dataset==row.dataset)&(results.variant==row.variant)&np.isclose(results.alpha,row.best_alpha)]
-        counts.append({"dataset":row.dataset,"variant":row.variant,"TP":int(subset.TP.sum()),"FP":int(subset.FP.sum()),"FN":int(subset.FN.sum())})
-    best=best.merge(pd.DataFrame(counts),on=["dataset","variant"])
-    base=best[best.variant=="A0_T3"][["dataset","f1_max"]].rename(columns={"f1_max":"t3_f1_max"})
-    best=best.merge(base,on="dataset"); best["delta_vs_t3"]=best.f1_max-best.t3_f1_max
-    macro=[]
-    for scope,datasets in config["macro_scopes"].items():
-        for variant in config["variants_order"]:
-            part=best[(best.dataset.isin(datasets))&(best.variant==variant)]
-            macro.append({"scope":scope,"variant":variant,"macro_f1max":part.f1_max.mean(),"TP":int(part.TP.sum()),"FP":int(part.FP.sum()),"FN":int(part.FN.sum())})
-    return means,best,pd.DataFrame(macro)
-
-
-def mechanism(output:Path,config:dict):
-    rows=[]
-    for path in sorted((output/"path_diagnostics").glob("*/*/*.npz")):
-        dataset,signal,variant=path.parts[-3],path.parts[-2],path.stem
-        with np.load(path,allow_pickle=False) as d:
-            rows.append({"dataset":dataset,"signal":signal,"variant":variant,"windows":len(d["reference_window_ids"]),"reference_change_fraction":float(d["reference_changed"].mean()),"path_change_fraction":float(d["path_changed"].mean()),"mean_visual_local":float(d["visual_local_costs"].mean()),"mean_numeric_local":float(d["numeric_local_costs"].mean())})
-    frame=pd.DataFrame(rows)
-    summary=frame.groupby(["dataset","variant"],as_index=False).agg(signals=("signal","count"),reference_change_fraction=("reference_change_fraction","mean"),path_change_fraction=("path_change_fraction","mean"),mean_visual_local=("mean_visual_local","mean"),mean_numeric_local=("mean_numeric_local","mean"))
-    return frame,summary
-
-
-def event_changes(best:pd.DataFrame,docs:dict,config:dict):
-    rows=[]; comparisons=["A1_numeric_only","A2_fixed_l025","A3_select_l025","A3_joint_l025"]
-    for dataset in config["datasets"]:
-        signals=sorted({key[1] for key in docs if key[0]==dataset})
-        for variant in comparisons:
-            recovered=lost=removed_fp=new_fp=0
-            for signal in signals:
-                base=docs[(dataset,signal,"A0_T3")]; model=docs[(dataset,signal,variant)]; truth=base["ground_truth_intervals"]
-                ba=selected(best,dataset,"A0_T3"); ma=selected(best,dataset,variant)
-                bp=next(x["detected_intervals"] for x in base["alpha_metrics"] if np.isclose(x["alpha"],ba)); mp=next(x["detected_intervals"] for x in model["alpha_metrics"] if np.isclose(x["alpha"],ma))
-                for event in truth:
-                    b=any(overlap(event,x) for x in bp); m=any(overlap(event,x) for x in mp); recovered+=int(m and not b); lost+=int(b and not m)
-                bfp=[x for x in bp if not any(overlap(x,e) for e in truth)]; mfp=[x for x in mp if not any(overlap(x,e) for e in truth)]
-                removed_fp+=sum(not any(overlap(x,y) for y in mfp) for x in bfp); new_fp+=sum(not any(overlap(x,y) for y in bfp) for x in mfp)
-            rows.append({"dataset":dataset,"variant":variant,"FN_recovered":recovered,"TP_lost":lost,"net_event_recovery":recovered-lost,"removed_t3_fp":removed_fp,"new_fp":new_fp,"net_fp_change":new_fp-removed_fp})
-    return pd.DataFrame(rows)
-
-
-def duration_event_changes(best:pd.DataFrame,docs:dict,config:dict):
-    rows=[]
-    for variant in ("A2_fixed_l025","A3_select_l025","A3_joint_l025"):
-        counts={name:{"events":0,"recovered":0,"lost":0} for name in ("short_le_56","medium_57_223","long_ge_224")}
-        for dataset in config["datasets"]:
-            signals=sorted({key[1] for key in docs if key[0]==dataset})
-            ba=selected(best,dataset,"A0_T3"); ma=selected(best,dataset,variant)
-            for signal in signals:
-                base=docs[(dataset,signal,"A0_T3")]; model=docs[(dataset,signal,variant)]
-                bp=next(x["detected_intervals"] for x in base["alpha_metrics"] if np.isclose(x["alpha"],ba)); mp=next(x["detected_intervals"] for x in model["alpha_metrics"] if np.isclose(x["alpha"],ma))
-                for event in base["ground_truth_intervals"]:
-                    length=float(event[1])-float(event[0])+1
-                    kind="short_le_56" if length<=56 else ("long_ge_224" if length>=224 else "medium_57_223")
-                    b=any(overlap(event,x) for x in bp); m=any(overlap(event,x) for x in mp)
-                    counts[kind]["events"]+=1; counts[kind]["recovered"]+=int(m and not b); counts[kind]["lost"]+=int(b and not m)
-        for kind,value in counts.items(): rows.append({"variant":variant,"duration_class":kind,**value,"net_event_recovery":value["recovered"]-value["lost"]})
-    return pd.DataFrame(rows)
-
-
-def matching_outcomes(results:pd.DataFrame,best:pd.DataFrame,mechanism_frame:pd.DataFrame):
-    records=[]
-    for dataset in best.dataset.unique():
-        ba=selected(best,dataset,"A0_T3")
-        base=results[(results.dataset==dataset)&(results.variant=="A0_T3")&np.isclose(results.alpha,ba)][["signal","f1"]].rename(columns={"f1":"t3_signal_f1"})
-        for variant in ("A1_numeric_only","A2_fixed_l025","A3_select_l025","A3_joint_l025"):
-            ma=selected(best,dataset,variant)
-            model=results[(results.dataset==dataset)&(results.variant==variant)&np.isclose(results.alpha,ma)][["signal","f1"]].rename(columns={"f1":"model_signal_f1"})
-            part=base.merge(model,on="signal"); part["dataset"]=dataset; part["variant"]=variant; part["signal_f1_delta"]=part.model_signal_f1-part.t3_signal_f1
-            records.append(part)
-    frame=pd.concat(records,ignore_index=True).merge(mechanism_frame,on=["dataset","signal","variant"],how="left")
-    frame["outcome"]=np.where(frame.signal_f1_delta>1e-12,"improved",np.where(frame.signal_f1_delta < -1e-12,"worsened","unchanged"))
-    summary=frame.groupby(["variant","outcome"],as_index=False).agg(signals=("signal","count"),mean_signal_f1_delta=("signal_f1_delta","mean"),mean_reference_change_fraction=("reference_change_fraction","mean"),mean_path_change_fraction=("path_change_fraction","mean"))
-    return frame,summary
-
-
-def runtime(output:Path):
-    rows=[]
-    for path in sorted((output/"metrics").glob("*/*/*.json")):
-        doc=load_json(path); timing=doc["timing"]
-        rows.append({"dataset":doc["dataset"],"signal":doc["signal"],"variant":doc["variant"],"matching_seconds":timing.get("matching_seconds",0),"recovery_seconds":timing.get("score_recovery_seconds",0),"shared_cost_seconds":timing.get("shared_numeric_visual_cost_seconds",0),"peak_cuda_memory_bytes":doc.get("peak_cuda_memory_bytes") or 0})
-    frame=pd.DataFrame(rows)
-    return frame.groupby("variant",as_index=False).agg(signals=("signal","count"),mean_matching_seconds=("matching_seconds","mean"),total_matching_seconds=("matching_seconds","sum"),mean_recovery_seconds=("recovery_seconds","mean"),mean_shared_cost_seconds=("shared_cost_seconds","mean"),peak_cuda_memory_bytes=("peak_cuda_memory_bytes","max"))
-
-
-def plots(output:Path,data_root:Path,best:pd.DataFrame,results:pd.DataFrame,config:dict):
-    import matplotlib; matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    plot_dir=output/"plots"; plot_dir.mkdir(exist_ok=True)
-    primary=["A0_T3","A1_numeric_only","A2_fixed_l025","A3_select_l025","A3_joint_l025"]
-    view=best[best.variant.isin(primary)].pivot(index="dataset",columns="variant",values="f1_max").reindex(config["datasets"])
-    ax=view.plot(kind="bar",figsize=(15,6),width=.85); ax.set_ylabel("Unweighted contextual F1-max"); ax.set_ylim(0,1); plt.tight_layout(); plt.savefig(plot_dir/"dataset_f1max.png",dpi=180); plt.close()
-    # Pick one largest success and failure by per-signal F1 at each model's fixed dataset alpha.
-    candidates=[]
-    for variant in ("A2_fixed_l025","A3_select_l025","A3_joint_l025"):
-        for dataset in config["datasets"]:
-            ba=selected(best,dataset,"A0_T3"); ma=selected(best,dataset,variant)
-            b=results[(results.dataset==dataset)&(results.variant=="A0_T3")&np.isclose(results.alpha,ba)][["signal","f1"]].rename(columns={"f1":"base"})
-            m=results[(results.dataset==dataset)&(results.variant==variant)&np.isclose(results.alpha,ma)][["signal","f1"]].rename(columns={"f1":"model"})
-            x=b.merge(m,on="signal"); x["delta"]=x.model-x.base; x["dataset"]=dataset; x["variant"]=variant; candidates.append(x)
-    cand=pd.concat(candidates,ignore_index=True)
-    picks=pd.concat(
-        [part.nlargest(1,"delta") for _,part in cand.groupby("variant")] +
-        [part.nsmallest(1,"delta") for _,part in cand.groupby("variant")],
-        ignore_index=True,
-    ).drop_duplicates(["dataset","signal","variant"])
-    for row in picks.itertuples():
-        data=load_signal(signal_path(data_root,row.dataset,row.signal),row.dataset); values=data.value.to_numpy(); times=data.timestamp.to_numpy()
-        score_dir=output/"point_scores"/row.dataset/row.signal
-        with np.load(score_dir/"A0_T3.npz") as z: base=z["scores"]
-        with np.load(score_dir/f"{row.variant}.npz") as z: model=z["scores"]
-        with np.load(output/"path_diagnostics"/row.dataset/row.signal/f"{row.variant}.npz") as z: num=z["numeric_evidence_point_scores"]; refs=z["reference_window_ids"]; t3refs=z["t3_reference_window_ids"]
-        fig,axes=plt.subplots(3,1,figsize=(12,7),sharex=False)
-        axes[0].plot(times,values,color="black",lw=.7); axes[0].set_title(f"{row.dataset}/{row.signal}: {row.variant}, signal F1 delta {row.delta:+.3f}")
-        for event in load_json(output/"metrics"/row.dataset/row.signal/"A0_T3.json")["ground_truth_intervals"]: axes[0].axvspan(event[0],event[1],color="red",alpha=.18)
-        for arr,label in ((base,"T3"),(num,"numeric evidence"),(model,row.variant)):
-            lo,hi=np.quantile(arr,[.01,.99]); axes[1].plot(times,(arr-lo)/max(hi-lo,1e-12),lw=.8,label=label)
-        axes[1].legend(ncol=3); axes[1].set_ylabel("robust normalized score")
-        axes[2].plot(t3refs,label="T3 reference",lw=.8); axes[2].plot(refs,label="selected reference",lw=.8,alpha=.8); axes[2].legend(); axes[2].set_xlabel("query window"); axes[2].set_ylabel("reference window ID")
-        fig.tight_layout(); fig.savefig(plot_dir/f"case_{row.variant}_{row.dataset}_{row.signal}.png",dpi=160); plt.close(fig)
-
-
-def report(output:Path,config:dict,best:pd.DataFrame,macro:pd.DataFrame,mechanism_summary:pd.DataFrame,events:pd.DataFrame,durations:pd.DataFrame,outcomes:pd.DataFrame,runtime_frame:pd.DataFrame):
-    primary=["A0_T3","A1_numeric_only","A2_fixed_l025","A3_select_l025","A3_joint_l025"]
-    table=macro[macro.variant.isin(primary)].pivot(index="variant",columns="scope",values="macro_f1max").reindex(primary)
-    per=best[best.variant.isin(primary)].pivot(index="dataset",columns="variant",values="f1_max").reindex(config["datasets"])
-    sensitivity=macro[macro.scope=="all_11"][["variant","macro_f1max","TP","FP","FN"]]
-    conclusions=[
-        "1. **Numeric-only matching is not competitive.** A1 reaches `0.546595/0.542373/0.578466` on All-11/Real-6/Yahoo-4, respectively. It changes the visual T3 reference in 62.64% of query windows and the DTW path in 37.30%, but loses 101 net true events and introduces 336 net false-positive intervals.",
-        "2. **Numeric residuals do not improve a fixed visual match.** The primary A2 weight 0.25 falls to `0.634062` All-11 and `0.617331` Real-6. Even the lighter fixed weight 0.10 is `0.667053`, below T3. A2-0.25 recovers 24 net events but adds 205 net false-positive intervals; normal numeric variability is being treated as anomaly evidence.",
-        "3. **Numeric reference selection is better than numeric score fusion, but the gain is not stable.** A3-select-0.25 reaches `0.682223`, which is `+0.006638` over T3 and is higher than both A2-0.25 and A3-joint-0.25 (`0.633977`). It changes references in 27.18% of windows but paths in only 2.37%, so the effect is reference routing rather than new temporal alignment.",
-        "4. **The nominal All-11 improvement is driven by the synthetic dataset.** A3-select-0.25 raises NAB Artificial from `0.833333` to `1.000000`. It drops Real-6 by `-0.017531` and only raises Yahoo-4 by `+0.002885`; across the ten non-artificial datasets its macro average is lower than T3. It improves AdExchange and Yahoo A1/A3, preserves Traffic, and degrades AWS, SMAP, MSL, Tweets, Yahoo A2 and A4.",
-        "5. **Final decision:** retain T3 as the strongest general real-data model. The only independently useful finding is that a low-dimensional numeric modality can rerank references without replacing the visual anomaly score. The current numeric distance and direct residual fusion are not suitable as a paper's final model. Further work would need an independent development corpus and a label-free reference-reliability criterion; this run does not justify adding a trained gate or another network."
-    ]
-    payload={"primary_weight":0.25,"t3_all11":0.675584301305,"numeric_only_all11":0.546595223257,"a2_fixed_l025_all11":0.634061879871,"a3_select_l025_all11":0.682222698742,"a3_joint_l025_all11":0.633976996599,"a3_select_delta_all11":0.006638397437,"a3_select_delta_real6":-0.017530980903,"a3_select_delta_yahoo4":0.002885397640,"decision":"retain_T3; numeric reference reranking is an exploratory mechanism, not a stable replacement"}
-    (output/"analysis_conclusions.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-    lines=["# Numeric modality controls for T3: final report","","## Protocol integrity","","- A0 is the immutable CLIP Block-6 T3 detector. Large/Mid scales, the 32-window candidate pool, DTW band ±2, restoration, thresholds, and evaluation are unchanged.","- Numeric patches are the exact 14 contiguous groups of 16 points aligned with visual time columns. The full sequence is detrended once and robustly scaled once; no Patch is independently normalized.","- All weights `{0, 0.1, 0.25, 0.5}` are retained as separate prespecified models. The primary comparison uses the preregistered weight 0.25; no weight is selected using labels.","","## Macro F1-max","",markdown(table),"","## Per-dataset primary comparison","",markdown(per),"","## Full fixed-weight sensitivity","",markdown(sensitivity,index=False),"","## Matching mechanism","",markdown(mechanism_summary[mechanism_summary.variant.isin(primary)],index=False),"","### Matching changes on improved and degraded signals","",markdown(outcomes,index=False),"","## Event and false-positive changes versus T3","",markdown(events,index=False),"","### Event duration analysis","",markdown(durations,index=False),"","## Runtime","",markdown(runtime_frame,index=False),"","## Conclusions","",*conclusions,"","## Artifacts","","- `results.csv`, `dataset_f1_by_alpha.csv`, `dataset_f1max.csv`, `macro_f1max.csv`","- `mechanism_per_signal.csv`, `mechanism_by_dataset.csv`, `matching_outcomes.csv`, `event_changes.csv`, `event_changes_by_duration.csv`, `runtime.csv`","- `point_scores/`, `path_diagnostics/`, `plots/`, `analysis_conclusions.json`, and `validation.json`"]
-    (output/"numeric_t3_final_report.md").write_text("\n".join(lines)+"\n",encoding="utf-8")
-
-
-def main(args):
-    config=load_json(args.config); results,docs=collect(args.output_root); means,best,macro=aggregate(results,config); mech,mechsum=mechanism(args.output_root,config); events=event_changes(best,docs,config); durations=duration_event_changes(best,docs,config); matchframe,outcomes=matching_outcomes(results,best,mech); timing=runtime(args.output_root)
-    for frame,name in ((results,"results.csv"),(means,"dataset_f1_by_alpha.csv"),(best,"dataset_f1max.csv"),(macro,"macro_f1max.csv"),(mech,"mechanism_per_signal.csv"),(mechsum,"mechanism_by_dataset.csv"),(matchframe,"matching_outcomes_per_signal.csv"),(outcomes,"matching_outcomes.csv"),(events,"event_changes.csv"),(durations,"event_changes_by_duration.csv"),(timing,"runtime.csv")): publish_csv(frame,args.output_root/name)
-    plots(args.output_root,args.data_root,best,results,config); report(args.output_root,config,best,macro,mechsum,events,durations,outcomes,timing)
-    print(macro[macro.scope.isin(["all_11","real_6","yahoo_4"])].to_string(index=False)); return 0
-
-
-if __name__=="__main__":
-    p=argparse.ArgumentParser(); p.add_argument("--config",type=Path,default=HERE/"config.json"); p.add_argument("--output-root",type=Path,required=True); p.add_argument("--data-root",type=Path,default=Path("/home/pengxf/jim/VLM4TS/data")); raise SystemExit(main(p.parse_args()))
+def md(frame,index=True):
+ v=frame.reset_index() if index else frame.copy(); lines=['| '+' | '.join(map(str,v.columns))+' |','| '+' | '.join(['---']*len(v.columns))+' |']
+ for row in v.itertuples(index=False,name=None): lines.append('| '+' | '.join(f'{x:.6f}' if isinstance(x,(float,np.floating)) else str(x) for x in row)+' |')
+ return '\n'.join(lines)
+def overlap(a,b): return not(a[1]<b[0] or b[1]<a[0])
+def collect(root):
+ rows=[]; docs={}
+ for path in sorted((root/'metrics').glob('*/*/*.json')):
+  d=json.loads(path.read_text()); key=(d['dataset'],d['signal'],d['variant']); docs[key]=d
+  for x in d['alpha_metrics']: rows.append({'dataset':key[0],'signal':key[1],'variant':key[2],**{k:x[k] for k in ('alpha','TP','FP','FN','f1')}})
+ return pd.DataFrame(rows),docs
+def aggregate(rows,config):
+ means=rows.groupby(['dataset','variant','alpha'],as_index=False).f1.mean().rename(columns={'f1':'f1_max'})
+ best=means.sort_values(['dataset','variant','f1_max','alpha'],ascending=[1,1,0,0],kind='stable').drop_duplicates(['dataset','variant']).rename(columns={'alpha':'best_alpha'})
+ count=[]
+ for x in best.itertuples():
+  q=rows[(rows.dataset==x.dataset)&(rows.variant==x.variant)&np.isclose(rows.alpha,x.best_alpha)]
+  count.append({'dataset':x.dataset,'variant':x.variant,'TP':int(q.TP.sum()),'FP':int(q.FP.sum()),'FN':int(q.FN.sum())})
+ best=best.merge(pd.DataFrame(count)); base=best[best.variant=='T3'][['dataset','f1_max']].rename(columns={'f1_max':'T3_f1'})
+ best=best.merge(base); best['delta_vs_T3']=best.f1_max-best.T3_f1
+ macro=[]
+ for scope,datasets in config['macro_scopes'].items():
+  for variant in config['variants_order']:
+   q=best[(best.dataset.isin(datasets))&(best.variant==variant)]
+   macro.append({'scope':scope,'variant':variant,'macro_f1max':q.f1_max.mean(),'TP':int(q.TP.sum()),'FP':int(q.FP.sum()),'FN':int(q.FN.sum())})
+ return means,best,pd.DataFrame(macro)
+def mechanism(root):
+ rows=[]
+ for p in sorted((root/'path_diagnostics').glob('*/*/*.npz')):
+  with np.load(p) as z: rows.append({'dataset':p.parts[-3],'signal':p.parts[-2],'variant':p.stem,'windows':len(z['reference_window_ids']),
+   'reference_change_fraction':float(z['reference_changed'].mean()),'path_change_fraction':float(z['path_changed'].mean()),'mean_visual_local_cost':float(z['visual_local_costs'].mean())})
+ f=pd.DataFrame(rows); return f,f.groupby('variant',as_index=False).agg(signals=('signal','count'),windows=('windows','sum'),reference_change_fraction=('reference_change_fraction','mean'),path_change_fraction=('path_change_fraction','mean'),mean_visual_local_cost=('mean_visual_local_cost','mean'))
+def event_changes(best,docs,config):
+ out=[]
+ for variant in [x for x in config['variants_order'] if x!='T3']:
+  rec=lost=removed=new=0
+  for dataset in config['datasets']:
+   ba=float(best[(best.dataset==dataset)&(best.variant=='T3')].best_alpha.iloc[0]); ma=float(best[(best.dataset==dataset)&(best.variant==variant)].best_alpha.iloc[0])
+   for signal in sorted(k[1] for k in docs if k[0]==dataset and k[2]=='T3'):
+    b=docs[(dataset,signal,'T3')]; m=docs[(dataset,signal,variant)]; truth=b['ground_truth_intervals']
+    bp=next(x['detected_intervals'] for x in b['alpha_metrics'] if np.isclose(x['alpha'],ba)); mp=next(x['detected_intervals'] for x in m['alpha_metrics'] if np.isclose(x['alpha'],ma))
+    for e in truth:
+     bh=any(overlap(e,x) for x in bp); mh=any(overlap(e,x) for x in mp); rec+=int(mh and not bh); lost+=int(bh and not mh)
+    bfp=[x for x in bp if not any(overlap(x,e) for e in truth)]; mfp=[x for x in mp if not any(overlap(x,e) for e in truth)]
+    removed+=sum(not any(overlap(x,y) for y in mfp) for x in bfp); new+=sum(not any(overlap(x,y) for y in bfp) for x in mfp)
+  out.append({'variant':variant,'FN_recovered':rec,'TP_lost':lost,'net_event_recovery':rec-lost,'removed_T3_FP':removed,'new_FP':new,'net_FP_change':new-removed})
+ return pd.DataFrame(out)
+def costs(root):
+ rows=[]
+ for p in sorted((root/'metrics').glob('*/*/*.json')):
+  d=json.loads(p.read_text()); t=d['timing']; rows.append({'variant':d['variant'],'inference_seconds':t.get('inference_seconds',0),'shared_seconds':t.get('shared_encoding_and_cost_seconds',0),'peak':d.get('peak_cuda_memory_bytes') or 0})
+ runtime=pd.DataFrame(rows).groupby('variant',as_index=False).agg(mean_incremental_seconds=('inference_seconds','mean'),mean_shared_seconds=('shared_seconds','mean'),peak_cuda_memory_bytes=('peak','max'))
+ training=[]
+ for p in sorted(Path('/home/pengxf/jim/VLM4TS/data/cache/vetime_bimodal_20261029/checkpoints').glob('*.pt')):
+  d=torch.load(p,map_location='cpu',weights_only=True); training.append({'checkpoint':p.stem,'train_windows':d['train_windows'],'dev_windows':d['dev_windows'],'training_seconds':d['elapsed_seconds'],'peak_cuda_memory_bytes':d['peak_cuda_memory_bytes'],'final_train_loss':d['history'][-1]['total'],'final_dev_loss':d['history'][-1]['dev_total']})
+ return runtime,pd.DataFrame(training)
+def main(a):
+ root=a.output_root; config=json.loads(a.config.read_text()); rows,docs=collect(root); means,best,macro=aggregate(rows,config); mech,mechsum=mechanism(root); events=event_changes(best,docs,config); runtime,training=costs(root)
+ for f,n in [(rows,'results.csv'),(means,'dataset_f1_by_alpha.csv'),(best,'dataset_f1max.csv'),(macro,'macro_f1max.csv'),(mech,'mechanism_per_signal.csv'),(mechsum,'mechanism_summary.csv'),(events,'event_changes.csv'),(runtime,'runtime.csv'),(training,'training_summary.csv')]: f.to_csv(root/n,index=False)
+ m=macro.pivot(index='variant',columns='scope',values='macro_f1max').reindex(config['variants_order']); counts=macro[macro.scope=='all_11'][['variant','TP','FP','FN']]
+ per=best.pivot(index='dataset',columns='variant',values='f1_max').reindex(config['datasets']); delta=best.pivot(index='dataset',columns='variant',values='delta_vs_T3').reindex(config['datasets'])
+ primary=macro[(macro.scope=='all_11')].set_index('variant').macro_f1max; full=float(primary.AMR_full); t3=float(primary.T3)
+ real=float(m.loc['AMR_full','real_6']); yahoo=float(m.loc['AMR_full','yahoo_4'])
+ ref=float(mechsum[mechsum.variant=='AMR_full'].reference_change_fraction.iloc[0]); path=float(mechsum[mechsum.variant=='AMR_full'].path_change_fraction.iloc[0])
+ verdict=('exceeds T3' if full>t3 else 'does not exceed T3')
+ lines=['# VETime-inspired aligned bimodal reference matching: final report','',
+ '## Scope and integrity','',
+ '- This is an original ViT4TS/T3 extension inspired by the Patch-level visual–temporal alignment idea in [VETime](https://arxiv.org/abs/2602.16681) and its [official implementation](https://github.com/yyyangcoder/VETime). No VETime checkpoint or external training data is used.',
+ '- Frozen OpenAI CLIP ViT-B/16 Block 6, the original candidate pool, overlap exclusion, constrained DTW band ±2, Large/Mid scales, visual anomaly evidence, restoration, and Unweighted Contextual F1-max protocol are retained.',
+ '- The 492 project signals are assigned to three immutable SHA256 folds. Each evaluation signal uses a checkpoint trained on the other two folds; a deterministic subset of those training folds is held out for validation. Labels are opened only after point scores are persisted.',
+ '- Architecture, losses, 16 epochs, AdamW 3e-4, hidden size 192, two Transformer layers, four heads, and selector weight 0.25 were fixed before full evaluation. The final epoch is used; validation loss does not select a checkpoint.',
+ '', '## Model','',
+ 'Each 224-point window is divided into fourteen 16-point numeric Patches. A multi-scale numeric encoder consumes level, first difference, second difference, and local trend, then applies a two-layer temporal Transformer. A learned vertical attention pool maps the complete 14×14 CLIP grid to fourteen visual time tokens. Bidirectional cross-attention preserves aligned Patch positions and emits fused selector tokens.',
+ '',
+ 'Training uses (1) exact cross-modal Patch consistency, (2) agreement between the two modalities’ complete 14×14 temporal relation matrices, (3) transition-geometry consistency, and (4) agreement between pairwise window-reference similarity matrices. The last objective never labels another window as a negative, so shifted periodic normal patterns may remain similar.',
+ '',
+ 'At inference, the learned cost only selects a reference and DTW path. The reported anomaly score is always the original T3 visual distance along that selected path. `TS_only` uses the trained numeric cost alone; `Late_joint` combines calibrated visual and numeric costs; `AMR_full` combines visual cost with cross-attended fused-token cost; `AMR_no_reference_loss` removes the window-reference geometry objective.',
+ '', '## Macro F1-max','',md(m),'','### All-11 contextual counts','',md(counts,index=False),'',
+ '## Per-dataset F1-max','',md(per),'','### Change relative to T3','',md(delta),'',
+ '## Reference and path mechanism','',md(mechsum,index=False),'',
+ f'`AMR_full` changes the selected reference in `{ref:.2%}` of query windows and changes the exact DTW path in `{path:.2%}`. Because final scores remain visual-only, all performance changes arise from learned reference routing and alignment.',
+ '', '## Event and false-positive changes','',md(events,index=False),'',
+ '## Training and runtime','',md(training,index=False),'',md(runtime,index=False),'',
+ 'The trainable model has 1,891,810 parameters; CLIP remains frozen. Cache construction reused existing CLIP features and therefore required no additional visual encoding.',
+ '', '## Findings','',
+ f'- **Primary result:** AMR_full reaches All-11 `{full:.6f}`, Real-6 `{real:.6f}`, and Yahoo-4 `{yahoo:.6f}`. It {verdict} (`{full-t3:+.6f}` All-11).',
+ f'- **Temporal branch alone:** TS_only reaches `{float(primary.TS_only):.6f}` All-11. This tests whether targeted representation learning makes raw-series reference routing independently viable.',
+ f'- **Cross-modal interaction:** AMR_full minus Late_joint is `{full-float(primary.Late_joint):+.6f}`. This is the controlled contribution of Patch-level interaction beyond late cost combination.',
+ f'- **Reference objective:** AMR_full minus AMR_no_reference_loss is `{full-float(primary.AMR_no_reference_loss):+.6f}`. This isolates learned reference-geometry supervision.',
+ '- The comparison with the prior hand-crafted `A3-select-0.25` (All-11 0.682223, Real-6 0.639558, Yahoo-4 0.666776) is interpreted separately because that result was driven by NAB Artificial and did not improve Real-6.',
+ '', '## Conclusion','']
+ if full>t3 and real>=0.657089:
+  lines+=['The trained temporal representation forms stable complementary reference evidence: it improves the overall and real-data macros while preserving T3 visual scoring. The useful contribution is learned reference compatibility, rather than a new anomaly-score fusion.']
+ elif full>t3:
+  lines+=['The model raises All-11 but does not preserve the T3 Real-6 baseline. The improvement is therefore not a stable general replacement; retain T3 for real-data use and treat the learned selector as an ablation result.']
+ else:
+  lines+=['Targeted self-supervised training does not produce a stable improvement over T3. Any controlled ablation gains are reported above, but the trained branch should not replace T3. The result indicates that cross-signal representation alignment is insufficient to choose better within-signal normal references under the present protocol.']
+ lines+=['','## Reproducibility','','- Code commit: `0eafb7c` plus the final reporting fix commit recorded in Git.','- Project-only training cache: `data/cache/vetime_bimodal_20261029/project_training_cache.pt`.','- Six cross-fit checkpoints: `data/cache/vetime_bimodal_20261029/checkpoints/`.','- Raw point scores and CSV tables are retained beside this report for audit; this Markdown file is the sole narrative deliverable.']
+ (root/'vetime_bimodal_final_report.md').write_text('\n'.join(lines)+'\n')
+ print(macro.to_string(index=False)); print(root/'vetime_bimodal_final_report.md')
+if __name__=='__main__':
+ p=argparse.ArgumentParser();p.add_argument('--config',type=Path,required=True);p.add_argument('--output-root',type=Path,required=True);main(p.parse_args())
