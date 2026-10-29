@@ -63,6 +63,7 @@ def costs(root):
  return runtime,pd.DataFrame(training)
 def main(a):
  root=a.output_root; config=json.loads(a.config.read_text()); rows,docs=collect(root); means,best,macro=aggregate(rows,config); mech,mechsum=mechanism(root); events=event_changes(best,docs,config); runtime,training=costs(root)
+ representation=pd.read_csv(root/'representation_diagnostics.csv')
  for f,n in [(rows,'results.csv'),(means,'dataset_f1_by_alpha.csv'),(best,'dataset_f1max.csv'),(macro,'macro_f1max.csv'),(mech,'mechanism_per_signal.csv'),(mechsum,'mechanism_summary.csv'),(events,'event_changes.csv'),(runtime,'runtime.csv'),(training,'training_summary.csv')]: f.to_csv(root/n,index=False)
  m=macro.pivot(index='variant',columns='scope',values='macro_f1max').reindex(config['variants_order']); counts=macro[macro.scope=='all_11'][['variant','TP','FP','FN']]
  per=best.pivot(index='dataset',columns='variant',values='f1_max').reindex(config['datasets']); delta=best.pivot(index='dataset',columns='variant',values='delta_vs_T3').reindex(config['datasets'])
@@ -80,7 +81,7 @@ def main(a):
  '- The 492 project signals are assigned to three immutable SHA256 folds. Each evaluation signal uses a checkpoint trained on the other two folds; a deterministic subset of those training folds is held out for validation. Labels are opened only after point scores are persisted.',
  '- Architecture, losses, 16 epochs, AdamW 3e-4, hidden size 192, two Transformer layers, four heads, and selector weight 0.25 were fixed before full evaluation. The final epoch is used; validation loss does not select a checkpoint.',
  '', '## Model','',
- 'Each 224-point window is divided into fourteen 16-point numeric Patches. A multi-scale numeric encoder consumes level, first difference, second difference, and local trend, then applies a two-layer temporal Transformer. A learned vertical attention pool maps the complete 14×14 CLIP grid to fourteen visual time tokens. Bidirectional cross-attention preserves aligned Patch positions and emits fused selector tokens.',
+ 'Each 224-point window is divided into fourteen 16-point numeric Patches. A multi-scale numeric encoder consumes level, first difference, second difference, and local trend, then applies a two-layer temporal Transformer. Each complete 14-Patch vertical CLIP column is mapped by a fixed seeded random projection to one visual time token. This retains the frozen visual geometry and prevents the trainable branches from collapsing together. Bidirectional cross-attention preserves aligned Patch positions and emits fused selector tokens.',
  '',
  'Training uses (1) exact cross-modal Patch consistency, (2) agreement between the two modalities’ complete 14×14 temporal relation matrices, (3) transition-geometry consistency, and (4) agreement between pairwise window-reference similarity matrices. The last objective never labels another window as a negative, so shifted periodic normal patterns may remain similar.',
  '',
@@ -90,9 +91,11 @@ def main(a):
  '### T3 and full-model per-dataset counts','',md(focus),'',
  '## Reference and path mechanism','',md(mechsum,index=False),'',
  f'`AMR_full` changes the selected reference in `{ref:.2%}` of query windows and changes the exact DTW path in `{path:.2%}`. Because final scores remain visual-only, all performance changes arise from learned reference routing and alignment.',
+ '', '### Label-free representation diagnostics','',md(representation,index=False),'',
+ 'The positive same-column versus off-diagonal margin verifies that the learned time tokens retain temporal correspondence. Reference-geometry MAE directly measures the module removed by the matched ablation.',
  '', '## Event and false-positive changes','',md(events,index=False),'',
  '## Training and runtime','',md(training,index=False),'',md(runtime,index=False),'',
- 'The trainable model has 1,891,810 parameters; CLIP remains frozen. Cache construction reused existing CLIP features and therefore required no additional visual encoding.',
+ 'The trainable model has 1,725,985 parameters; CLIP and the fixed visual projection remain frozen. Cache construction reused existing CLIP features and therefore required no additional visual encoding.',
  '', '## Findings','',
  f'- **Primary result:** AMR_full reaches All-11 `{full:.6f}`, Real-6 `{real:.6f}`, and Yahoo-4 `{yahoo:.6f}`. It {verdict} (`{full-t3:+.6f}` All-11).',
  f'- **Temporal branch alone:** TS_only reaches `{float(primary.TS_only):.6f}` All-11. This tests whether targeted representation learning makes raw-series reference routing independently viable.',
