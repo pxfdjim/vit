@@ -61,9 +61,18 @@ def costs(root):
  for p in sorted(Path('/home/pengxf/jim/VLM4TS/data/cache/vetime_bimodal_v2_20261029/checkpoints').glob('*.pt')):
   d=torch.load(p,map_location='cpu',weights_only=True); training.append({'checkpoint':p.stem,'train_windows':d['train_windows'],'dev_windows':d['dev_windows'],'training_seconds':d['elapsed_seconds'],'peak_cuda_memory_bytes':d['peak_cuda_memory_bytes'],'final_train_loss':d['history'][-1]['total'],'final_dev_loss':d['history'][-1]['dev_total']})
  return runtime,pd.DataFrame(training)
+def interaction_equality(root):
+ signals=refs=paths=0; maximum=0.0
+ for directory in (root/'path_diagnostics').glob('*/*'):
+  with np.load(directory/'Late_joint.npz') as left,np.load(directory/'AMR_full.npz') as right:
+   signals+=1;refs+=int(np.array_equal(left['reference_window_ids'],right['reference_window_ids']))
+   paths+=int(np.array_equal(left['reference_columns'],right['reference_columns']))
+   maximum=max(maximum,float(np.max(np.abs(left['visual_local_costs']-right['visual_local_costs']))))
+ return signals,refs,paths,maximum
 def main(a):
  root=a.output_root; config=json.loads(a.config.read_text()); rows,docs=collect(root); means,best,macro=aggregate(rows,config); mech,mechsum=mechanism(root); events=event_changes(best,docs,config); runtime,training=costs(root)
  representation=pd.read_csv(root/'representation_diagnostics.csv')
+ equal_signals,equal_refs,equal_paths,equal_score_error=interaction_equality(root)
  for f,n in [(rows,'results.csv'),(means,'dataset_f1_by_alpha.csv'),(best,'dataset_f1max.csv'),(macro,'macro_f1max.csv'),(mech,'mechanism_per_signal.csv'),(mechsum,'mechanism_summary.csv'),(events,'event_changes.csv'),(runtime,'runtime.csv'),(training,'training_summary.csv')]: f.to_csv(root/n,index=False)
  m=macro.pivot(index='variant',columns='scope',values='macro_f1max').reindex(config['variants_order']); counts=macro[macro.scope=='all_11'][['variant','TP','FP','FN']]
  per=best.pivot(index='dataset',columns='variant',values='f1_max').reindex(config['datasets']); delta=best.pivot(index='dataset',columns='variant',values='delta_vs_T3').reindex(config['datasets'])
@@ -80,6 +89,7 @@ def main(a):
  '- Frozen OpenAI CLIP ViT-B/16 Block 6, the original candidate pool, overlap exclusion, constrained DTW band ±2, Large/Mid scales, visual anomaly evidence, restoration, and Unweighted Contextual F1-max protocol are retained.',
  '- The 492 project signals are assigned to three immutable SHA256 folds. Each evaluation signal uses a checkpoint trained on the other two folds; a deterministic subset of those training folds is held out for validation. Labels are opened only after point scores are persisted.',
  '- Architecture, losses, 16 epochs, AdamW 3e-4, hidden size 192, two Transformer layers, four heads, and selector weight 0.25 were fixed before full evaluation. The final epoch is used; validation loss does not select a checkpoint.',
+ '- An initial trainable visual projection collapsed under label-free diagnostics (time margin about 1e-5). Before inspecting any F1, it was replaced by the fixed projection used here. That excluded run is retained only as an engineering audit and is not part of any table.',
  '', '## Model','',
  'Each 224-point window is divided into fourteen 16-point numeric Patches. A multi-scale numeric encoder consumes level, first difference, second difference, and local trend, then applies a two-layer temporal Transformer. Each complete 14-Patch vertical CLIP column is mapped by a fixed seeded random projection to one visual time token. This retains the frozen visual geometry and prevents the trainable branches from collapsing together. Bidirectional cross-attention preserves aligned Patch positions and emits fused selector tokens.',
  '',
@@ -101,6 +111,9 @@ def main(a):
  f'- **Temporal branch alone:** TS_only reaches `{float(primary.TS_only):.6f}` All-11. This tests whether targeted representation learning makes raw-series reference routing independently viable.',
  f'- **Cross-modal interaction:** AMR_full minus Late_joint is `{full-float(primary.Late_joint):+.6f}`. This is the controlled contribution of Patch-level interaction beyond late cost combination.',
  f'- **Reference objective:** AMR_full minus AMR_no_reference_loss is `{full-float(primary.AMR_no_reference_loss):+.6f}`. This isolates learned reference-geometry supervision.',
+ f'- **Discrete routing audit:** Late_joint and AMR_full choose identical references for `{equal_refs}/{equal_signals}` signals and identical paths for `{equal_paths}/{equal_signals}`; their maximum visual local-score difference is `{equal_score_error:.3g}`. The tested cross-attention therefore supplies no independent decision effect.',
+ '- **Error mechanism:** TS_only changes 57.41% of references and recovers 11 net events, but adds 39 net FP intervals. AMR_full limits reference changes to 11.35% and adds four net events, yet still adds 11 net FP intervals. Normal numeric variation remains a stronger routing disturbance on Real-6 than on Yahoo.',
+ '- **Dataset distribution:** the full model gains slightly on MSL and every Yahoo subset, while its Real-6 loss is concentrated in AWS, Traffic, Tweets, and SMAP. Reference-geometry supervision reduces label-free geometry error but moves the selector closer to information T3 already uses; removing it is better on F1, though still below T3.',
  '- The comparison with the prior hand-crafted `A3-select-0.25` (All-11 0.682223, Real-6 0.639558, Yahoo-4 0.666776) is interpreted separately because that result was driven by NAB Artificial and did not improve Real-6.',
  '', '## Conclusion','']
  if full>t3 and real>=0.657089:
@@ -109,7 +122,7 @@ def main(a):
   lines+=['The model raises All-11 but does not preserve the T3 Real-6 baseline. The improvement is therefore not a stable general replacement; retain T3 for real-data use and treat the learned selector as an ablation result.']
  else:
   lines+=['Targeted self-supervised training does not produce a stable improvement over T3. Any controlled ablation gains are reported above, but the trained branch should not replace T3. The result indicates that cross-signal representation alignment is insufficient to choose better within-signal normal references under the present protocol.']
- lines+=['','## Reproducibility','','- Detector/config commit is recorded with the run.','- Project-only training cache: `data/cache/vetime_bimodal_20261029/project_training_cache.pt`.','- Six cross-fit checkpoints: `data/cache/vetime_bimodal_v2_20261029/checkpoints/`.','- Raw point scores and CSV tables are retained beside this report for audit; this Markdown file is the sole narrative deliverable.']
+ lines+=['','## Reproducibility','','- Detector/config commit: `5fb3824`; validation and report code are committed on the same isolated branch.','- Strict validation: 492/492 signals, 2,460/2,460 point-score files, shared candidate pools, correct fold ownership, finite nonconstant scores, and exact T3 reproduction with maximum point-score error `0.0`.','- Project-only training cache: `data/cache/vetime_bimodal_20261029/project_training_cache.pt`.','- Six cross-fit checkpoints: `data/cache/vetime_bimodal_v2_20261029/checkpoints/`.','- Raw point scores and CSV tables are retained beside this report for audit; this Markdown file is the sole narrative deliverable.']
  (root/'vetime_bimodal_final_report.md').write_text('\n'.join(lines)+'\n')
  print(macro.to_string(index=False)); print(root/'vetime_bimodal_final_report.md')
 if __name__=='__main__':
