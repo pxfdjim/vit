@@ -23,7 +23,10 @@ def main():
      if meta['cross_fit_eval_fold']!=fold(dataset,d.name): failures.append(f'fold mismatch {dataset}/{d.name}/{variant}')
      digests.add(meta['candidate_pool_digest'])
      if variant=='T3':
-      old=a.source_t3_root/'point_scores'/dataset/d.name/'T3_constrained_dtw.npz'
+      candidates=[a.source_t3_root/'point_scores'/dataset/d.name/'T3_constrained_dtw.npz',a.source_t3_root/'point_scores'/dataset/d.name/'T3.npz']
+      old=next((x for x in candidates if x.is_file()),None)
+      if old is None:
+       failures.append(f'missing source T3 {dataset}/{d.name}');continue
       with np.load(old) as q: max_error=max(max_error,float(np.max(np.abs(scores-q['scores']))))
    if len(digests)>1: failures.append(f'pool mismatch {dataset}/{d.name}')
  expected=sum(config['expected_signal_counts'].values())

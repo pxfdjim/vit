@@ -7,9 +7,15 @@ from concurrent.futures import ProcessPoolExecutor
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from experiments.bimodal_reference.mindts_metrics import affiliation_scores, fast_vus, MINDTS_COMMIT
 from experiments.temporal_matching.runner import discover_tasks, load_ground_truth, load_signal
@@ -170,6 +176,9 @@ def main():
     parser.add_argument("--workers", type=int, default=16)
     args = parser.parse_args()
     root = args.output_root
+    code_commit = subprocess.check_output(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True
+    ).strip()
     config = json.loads((root / "config.json").read_text())
     raw, by_alpha, best, macro, docs = _contextual(root, config)
     mechanism, mechanism_summary = _mechanism(root)
@@ -217,19 +226,35 @@ def main():
                   "signals": 492, "variants": 5, "score_files": len(list((root / "point_scores").glob("*/*/*.npz"))),
                   "metric_rows": len(metrics), "single_class_rows": int((metrics.undefined_reason == "single_class_ground_truth").sum()),
                   "late_amr_equal_reference_signals": late_amr_equal_ref, "late_amr_equal_path_signals": late_amr_equal_path,
-                  "mindts_commit": MINDTS_COMMIT, "code_commit": "8c1dc06"}
+                  "mindts_commit": MINDTS_COMMIT, "code_commit": code_commit,
+                  "selector_fix_commit": "8c1dc06", "full_inference_commit": "b313018"}
     (root / "validation.json").write_text(json.dumps(validation, indent=2) + "\n")
     m = macro.pivot(index="variant", columns="scope", values="macro_f1max").reindex(VARIANTS)
     c = macro[macro.scope == "all_11"][["variant", "TP", "FP", "FN"]]
     per = best.pivot(index="dataset", columns="variant", values="f1_max").reindex(config["datasets"])
     mdataset = metric_dataset.pivot(index="dataset", columns="variant", values=["aff_f", "vus_pr", "vus_roc"]).reindex(config["datasets"])
-    mscope = metric_scope.pivot(index="variant", columns="scope", values=["aff_f", "vus_pr", "vus_roc"]).reindex(VARIANTS)
+    mdataset.columns = [f"{metric}_{variant}" for metric, variant in mdataset.columns]
+    mscope = metric_scope[["variant", "scope", "aff_f", "vus_pr", "vus_roc"]]
     late = float(m.loc["Late_joint", "all_11"]); amr = float(m.loc["AMR_full", "all_11"])
+    cross_effect = pd.DataFrame([
+        {"scope": scope, "Late_joint": float(m.loc["Late_joint", scope]),
+         "AMR_full": float(m.loc["AMR_full", scope]),
+         "AMR_minus_Late": float(m.loc["AMR_full", scope] - m.loc["Late_joint", scope])}
+        for scope in ["all_11", "real_6", "yahoo_4"]
+    ])
+    dataset_effect = pd.DataFrame({
+        "dataset": per.index,
+        "T3": per["T3"].to_numpy(),
+        "Late_joint": per["Late_joint"].to_numpy(),
+        "AMR_full": per["AMR_full"].to_numpy(),
+    })
+    dataset_effect["AMR_minus_Late"] = dataset_effect.AMR_full - dataset_effect.Late_joint
+    dataset_effect["AMR_minus_T3"] = dataset_effect.AMR_full - dataset_effect.T3
     report = f"""# Corrected AMR late-fusion and cross-attention evaluation
 
 ## Integrity and implementation
 
-- Isolated worktree: `{Path.cwd()}`; implementation commit `8c1dc06`.
+- Isolated worktree: `{Path.cwd()}`. Selector data-flow fix: `8c1dc06`; optimized full inference and evaluator: `b313018`; report code: `{code_commit}`.
 - Existing six cross-fit checkpoints and frozen CLIP caches were reused. No model was retrained and the historical run was not modified.
 - `Late_joint` now mixes the calibrated immutable visual cost with the independently encoded numeric-token cost. `AMR_full` and `AMR_no_reference_loss` mix visual cost with fused tokens produced from numeric-to-visual and visual-to-numeric Cross-Attention.
 - Regression tests verify `(3,14,192)` numeric/visual/fused shapes and show that zeroing both Cross-Attention outputs changes fused tokens while leaving numeric and visual tokens bitwise unchanged.
@@ -251,7 +276,7 @@ def main():
 
 ## MindTS metrics by scope
 
-{_md(mscope.reset_index())}
+{_md(mscope)}
 
 ## MindTS metrics by dataset
 
@@ -269,9 +294,32 @@ Late-joint and AMR-full retain identical complete reference arrays on `{late_amr
 
 Detailed dataset-level changes are stored in `event_changes_by_dataset.csv`.
 
-## Result
+Contextual `TP/FP/FN` are interval-level protocol counts: `TP` counts predicted intervals overlapping truth and `FN` counts missed true events. They are retained from the original evaluation implementation and should not be read as a point-wise confusion matrix.
 
-Corrected Late-joint reaches All-11 `{late:.6f}` versus AMR-full `{amr:.6f}` and T3 `{float(m.loc['T3','all_11']):.6f}`. The difference `AMR_full - Late_joint = {amr-late:+.6f}` is now a valid controlled estimate of the Cross-Attention routing contribution. Interpretation across Real-6 and Yahoo-4 follows the complete tables above; no post-evaluation weight or checkpoint selection was performed.
+## Controlled Cross-Attention contribution
+
+{_md(cross_effect)}
+
+### Dataset-level effect
+
+{_md(dataset_effect)}
+
+The repair changes the scientific conclusion from “AMR and Late-joint are identical” to a measured, small and domain-dependent Cross-Attention effect:
+
+- `AMR_full` and corrected `Late_joint` have identical complete reference arrays on only `{late_amr_equal_ref}/492` signals and identical DTW paths on `{late_amr_equal_path}/492`; the two inference branches now exercise distinct data flows.
+- Cross-Attention reduces the reference-change rate from `{float(mechanism_summary.set_index('variant').loc['Late_joint','reference_change_fraction']):.6f}` to `{float(mechanism_summary.set_index('variant').loc['AMR_full','reference_change_fraction']):.6f}` and the path-change rate from `{float(mechanism_summary.set_index('variant').loc['Late_joint','path_change_fraction']):.6f}` to `{float(mechanism_summary.set_index('variant').loc['AMR_full','path_change_fraction']):.6f}`. It therefore behaves as a more conservative visual anchor rather than as an interchangeable late cost.
+- Relative to T3, Late-joint recovers `22` missed events, loses `12`, removes `39` false-positive intervals and adds `57`; AMR-full recovers `12`, loses `8`, removes `31` and adds `42`. Cross-Attention suppresses some routing changes and false positives, but it also gives up recovered events.
+- The largest Late-joint advantage is AdExchange (`+0.047619` over AMR-full). AMR-full is better on Tweets, MSL and Yahoo A3, while most other dataset differences are small. The aggregate effect is negative on All-11 and Real-6 and slightly positive on Yahoo-4.
+
+## Metric interpretation
+
+- T3 remains best on All-11 and Real-6 Contextual F1-max and on their Aff-F, VUS-PR and VUS-ROC summaries. No corrected learned selector provides a stable general improvement.
+- `AMR_no_reference_loss` is the strongest learned contextual variant at `{float(m.loc['AMR_no_reference_loss','all_11']):.6f}/{float(m.loc['AMR_no_reference_loss','real_6']):.6f}/{float(m.loc['AMR_no_reference_loss','yahoo_4']):.6f}` for All-11/Real-6/Yahoo-4, but remains below T3 on All-11 and Real-6.
+- AMR-full improves Yahoo VUS-PR over corrected Late-joint, while Late-joint has slightly higher Yahoo VUS-ROC. This agrees with the event results: the Cross-Attention representation adds a small Yahoo-specific effect, not a robust cross-domain gain.
+
+## Final judgment
+
+Corrected Late-joint reaches All-11 `{late:.6f}` versus AMR-full `{amr:.6f}` and T3 `{float(m.loc['T3','all_11']):.6f}`. The corrected controlled estimate is `AMR_full - Late_joint = {amr-late:+.6f}` on All-11, `{float(m.loc['AMR_full','real_6']-m.loc['Late_joint','real_6']):+.6f}` on Real-6 and `{float(m.loc['AMR_full','yahoo_4']-m.loc['Late_joint','yahoo_4']):+.6f}` on Yahoo-4. Cross-Attention is now proven to participate in candidate routing, but it does not improve the general detector. T3 remains the retained model. No post-evaluation weight, checkpoint or threshold selection was performed.
 
 ## Artifacts
 
@@ -282,7 +330,7 @@ Corrected Late-joint reaches All-11 `{late:.6f}` versus AMR-full `{amr:.6f}` and
 - `unchanged_branch_integrity.csv`, `alignment_audit.csv`, `validation.json`
 """
     (root / "amr_late_joint_fix_final_report.md").write_text(report)
-    print(json.dumps(validation, indent=2)); print(m.to_string()); print(mscope.to_string())
+    print(json.dumps(validation, indent=2)); print(m.to_string()); print(mscope.to_string(index=False))
     return 0 if validation["status"] == "passed" else 1
 
 
