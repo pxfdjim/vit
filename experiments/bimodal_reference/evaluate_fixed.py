@@ -231,7 +231,12 @@ def main():
     (root / "validation.json").write_text(json.dumps(validation, indent=2) + "\n")
     m = macro.pivot(index="variant", columns="scope", values="macro_f1max").reindex(VARIANTS)
     c = macro[macro.scope == "all_11"][["variant", "TP", "FP", "FN"]]
+    scope_counts = macro[["scope", "variant", "macro_f1max", "TP", "FP", "FN"]]
     per = best.pivot(index="dataset", columns="variant", values="f1_max").reindex(config["datasets"])
+    dataset_counts = best[["dataset", "variant", "best_alpha", "f1_max", "TP", "FP", "FN"]].copy()
+    dataset_counts["dataset"] = pd.Categorical(dataset_counts["dataset"], categories=config["datasets"], ordered=True)
+    dataset_counts["variant"] = pd.Categorical(dataset_counts["variant"], categories=VARIANTS, ordered=True)
+    dataset_counts = dataset_counts.sort_values(["dataset", "variant"])
     mdataset = metric_dataset.pivot(index="dataset", columns="variant", values=["aff_f", "vus_pr", "vus_roc"]).reindex(config["datasets"])
     mdataset.columns = [f"{metric}_{variant}" for metric, variant in mdataset.columns]
     mscope = metric_scope[["variant", "scope", "aff_f", "vus_pr", "vus_roc"]]
@@ -270,9 +275,17 @@ def main():
 
 {_md(c)}
 
+### Contextual F1/TP/FP/FN by scope
+
+{_md(scope_counts)}
+
 ## Per-dataset Contextual F1-max
 
 {_md(per.reset_index())}
+
+### Complete per-dataset Contextual F1/TP/FP/FN
+
+{_md(dataset_counts)}
 
 ## MindTS metrics by scope
 
