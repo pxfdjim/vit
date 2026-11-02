@@ -50,6 +50,19 @@ def _calibrate(reference,other):
  ratio=float(np.clip(_positive_median(reference)/max(_positive_median(other),EPS),1e-4,1e4))
  return [c*ratio for c in other],ratio
 
+def _learned_cost_kind(selector):
+ """Map each learned selector to its intended independent representation.
+
+ Late fusion combines the immutable visual cost with the numeric-branch cost.
+ Cross-modal AMR combines it with the bidirectional cross-attention fused cost.
+ Keeping this mapping explicit prevents both ablations from silently sharing
+ the same fused-token cost.
+ """
+ selector=str(selector).upper()
+ if selector in {'TS_ONLY','LATE_JOINT'}: return 'numeric'
+ if selector=='CROSS_MODAL': return 'fused'
+ raise ValueError(f'unsupported learned selector: {selector}')
+
 class BimodalReferenceBackend:
  def __init__(self,config:Mapping[str,Any],device,cache_dir):
   self.config=dict(config); self.model_config=dict(config.get('model',{})); self.cache_config=dict(config.get('cache',{}))
@@ -94,7 +107,8 @@ class BimodalReferenceBackend:
   for name,spec in variants.items():
    kind=str(spec.get('selector','T3')); model_key=str(spec.get('checkpoint','full'))
    if kind=='T3': continue
-   learned=costsets[(model_key,'numeric' if kind=='TS_ONLY' else 'fused')]
+   learned_kind=_learned_cost_kind(kind)
+   learned=costsets[(model_key,learned_kind)]
    chosen=learned if kind=='TS_ONLY' else mix_costs(visual,learned,weight)
    matches[name]=match_paths(chosen,pool,band=2,penalty_scale=.1)
   results={}
@@ -106,6 +120,7 @@ class BimodalReferenceBackend:
    ref_changed=match.reference_ids.cpu()!=base.reference_ids.cpu(); path_changed=(match.path_masks!=base.path_masks).reshape(nw,-1).any(1)
    results[name]={'scores':np.asarray(scores,np.float64),'timestamps':timestamps,
     'metadata':{'family':kind,'checkpoint':str(spec.get('checkpoint','full')),'numeric_weight':0 if kind in {'T3','TS_ONLY'} else weight,
+     'learned_cost_kind':'none' if kind=='T3' else _learned_cost_kind(kind),
      'candidate_pool_digest':pool_digest,'reference_change_fraction':float(ref_changed.float().mean()),'path_change_fraction':float(path_changed.float().mean()),
      'learned_cost_scales':scales.get(str(spec.get('checkpoint','full')),{}),'shared_encoding_and_cost_seconds':shared_seconds,
      'matching_seconds':elapsed,'inference_seconds':elapsed,'n_windows':nw,'input_digest':digest[:20],'final_cache_path':str(fp),'block_cache_path':str(bp),
