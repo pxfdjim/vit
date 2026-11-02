@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "experiment_name": "vfg_paired_incremental",
+  "seed": 20261027,
+  "datasets": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch"],
+  "real_datasets": ["realTraffic", "realTweets", "SMAP", "MSL", "realAdExchange", "realAWSCloudwatch"],
+  "macro_scopes": {
+    "real_6": ["realTraffic", "realTweets", "SMAP", "MSL", "realAdExchange", "realAWSCloudwatch"],
+    "all_7": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch"]
+  },
+  "expected_signal_counts": {
+    "realTraffic": 7,
+    "realTweets": 10,
+    "SMAP": 53,
+    "MSL": 27,
+    "artificialWithAnomaly": 6,
+    "realAdExchange": 5,
+    "realAWSCloudwatch": 17
+  },
+  "evaluation": {
+    "alphas": [0.1, 0.01, 0.001],
+    "threshold_method": "mean",
+    "smoothing": true,
+    "sliding": false,
+    "anomaly_padding": 0,
+    "require_complete_dataset": true,
+    "selection_protocol": "For each dataset, variant and alpha, equally average contextual F1 across complete signals, then select the alpha with the largest mean. Macro averages use the selected dataset values."
+  },
+  "model": {
+    "window_size": 224,
+    "step_size": 56,
+    "window_step_ratio": 4.0,
+    "image_size": [224, 224],
+    "patch_size": 16,
+    "visual_grid": [14, 14],
+    "visual_encoder": "OpenAI CLIP ViT-B/16",
+    "freeze_visual_encoder": true,
+    "harmonic": "stable",
+    "large_mid_scales": "stable_and_identical_for_all_variants",
+    "matching": {
+      "overlap_exclusion_window_index_radius": 4,
+      "max_common_visual_windows": 32,
+      "visual_patch_top_k": 5,
+      "fft_guided_selected_windows": 5,
+      "frequency_weight": 0.3,
+      "calibration": "one_unlabeled_sequence_scalar"
+    },
+    "frequency": {
+      "input": "globally_detrended_before_visual_minmax",
+      "window": "hann",
+      "local_fft_length": 64,
+      "hop_length": 16,
+      "time_positions": 14,
+      "kept_non_dc_bins": 32,
+      "magnitude": "log1p",
+      "boundary": "centered_reflect_pad",
+      "boundary_pad_points_each_side": 24
+    }
+  },
+  "cache": {
+    "reuse_existing": true,
+    "never_replace": true,
+    "relative_path": "feature_cache/{dataset}/{signal}/visual_{digest20}.pt",
+    "required_payload_keys": ["cache_version", "input_digest", "large", "mid", "patch", "large_mask", "mid_mask"]
+  },
+  "variants": {
+    "A_stable_median": {
+      "label": "A: Stable median reference",
+      "base_patch": "independent_visual_median",
+      "frequency": false
+    },
+    "B_paired_visual": {
+      "label": "B: Paired visual reference",
+      "base_patch": "paired_real_window_visual",
+      "frequency": false
+    },
+    "C_paired_fft_joint": {
+      "label": "C: Paired visual + full-window FFT joint",
+      "base_patch": "paired_visual_fft_joint",
+      "frequency": "full_window_fft",
+      "lambda": 0.3
+    },
+    "D_fft_guided_reference": {
+      "label": "D: FFT-guided reference",
+      "base_patch": "fft_guided_reference_selection",
+      "frequency": "full_window_fft"
+    },
+    "E_paired_stft_joint": {
+      "label": "E: Paired visual + local STFT joint",
+      "base_patch": "paired_visual_stft_joint",
+      "frequency": "local_stft",
+      "lambda": 0.3
+    }
+  },
+  "variants_order": ["A_stable_median", "B_paired_visual", "C_paired_fft_joint", "D_fft_guided_reference", "E_paired_stft_joint"],
+  "comparisons": [
+    {"name": "B_minus_A", "left": "B_paired_visual", "right": "A_stable_median"},
+    {"name": "C_minus_B", "left": "C_paired_fft_joint", "right": "B_paired_visual"},
+    {"name": "D_minus_B", "left": "D_fft_guided_reference", "right": "B_paired_visual"},
+    {"name": "D_minus_C", "left": "D_fft_guided_reference", "right": "C_paired_fft_joint"},
+    {"name": "E_minus_C", "left": "E_paired_stft_joint", "right": "C_paired_fft_joint"}
+  ]
+}
