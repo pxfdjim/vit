@@ -1,0 +1,35 @@
+{
+  "realAdExchange": {
+    "signals": 5,
+    "points": 7967,
+    "paper_points": 7965,
+    "events": 11,
+    "paper_events": 11,
+    "duplicate_timestamps": 2,
+    "sorted_signals": 5,
+    "finite_signals": 5,
+    "ground_truth_in_range_signals": 5
+  },
+  "realAWSCloudwatch": {
+    "signals": 17,
+    "points": 67666,
+    "paper_points": 67644,
+    "events": 30,
+    "paper_events": 30,
+    "duplicate_timestamps": 22,
+    "sorted_signals": 17,
+    "finite_signals": 17,
+    "ground_truth_in_range_signals": 17
+  },
+  "SMAP": {
+    "signals": 53,
+    "points": 562800,
+    "paper_points": 562800,
+    "events": 67,
+    "paper_events": 67,
+    "duplicate_timestamps": 0,
+    "sorted_signals": 53,
+    "finite_signals": 53,
+    "ground_truth_in_range_signals": 53
+  }
+}

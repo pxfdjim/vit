@@ -82,27 +82,46 @@ class CLIP_AD(nn.Module):
           "output_tokens": True  # Enable token output
         }
 
-        # Prefer the verified local OpenAI ViT-B/16 checkpoint when available.
-        checkpoint = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            'data', 'model_cache', 'ViT-B-16.pt'
-        )
-        use_local_checkpoint = model_name == 'ViT-B-16' and os.path.isfile(checkpoint)
-        if use_local_checkpoint:
+        # The paper specifies LAION-400M ViT-B/16; e32 is the final public OpenCLIP checkpoint.
+        # Use CLIP_PRETRAINED=openai to reproduce the authors' public repository instead.
+        pretrained_tag = os.getenv('CLIP_PRETRAINED', 'laion400m_e32').strip().lower()
+        if pretrained_tag not in ('laion400m_e32', 'openai'):
+            raise ValueError(f'Unsupported CLIP_PRETRAINED: {pretrained_tag}')
+        checkpoint = None
+        if model_name == 'ViT-B-16':
+            cache_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                'data', 'model_cache'
+            )
+            checkpoints = {
+                'laion400m_e32': (
+                    'vit_b_16-laion400m_e32-55e67d44.pt',
+                    '55e67d44b44d9e39aaf299a5c616aaf10a655879d6bd5854027b4a254aa2e7d5',
+                ),
+                'openai': (
+                    'ViT-B-16.pt',
+                    '5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f',
+                ),
+            }
+            filename, expected = checkpoints[pretrained_tag]
+            checkpoint = os.path.join(cache_dir, filename)
+            if not os.path.isfile(checkpoint):
+                raise FileNotFoundError(f'Missing {pretrained_tag} CLIP checkpoint: {checkpoint}')
             digest = hashlib.sha256()
             with open(checkpoint, 'rb') as checkpoint_file:
                 for block in iter(lambda: checkpoint_file.read(1024 * 1024), b''):
                     digest.update(block)
-            expected = '5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f'
             if digest.hexdigest() != expected:
                 raise ValueError(f'Unexpected SHA-256 for CLIP checkpoint: {checkpoint}')
+        self.pretrained_tag = pretrained_tag
+        self.checkpoint = checkpoint
         self.model, _, _ = open_clip.create_model_and_transforms(
             model_name,
-            pretrained=checkpoint if use_local_checkpoint else 'openai',
+            pretrained=checkpoint if checkpoint else pretrained_tag,
             vision_cfg=vision_cfg,
-            force_quick_gelu=use_local_checkpoint,
-            # The SHA-256-verified official checkpoint is a TorchScript archive.
-            weights_only=not use_local_checkpoint
+            force_quick_gelu=pretrained_tag == 'openai',
+            # The OpenAI checkpoint is a TorchScript archive; LAION is a state dict.
+            weights_only=pretrained_tag != 'openai'
         )
         self.model = self.model.to(self.device)
         self.image_size = image_size
