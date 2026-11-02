@@ -91,17 +91,31 @@ class BimodalReferenceBackend:
   base=match_paths(visual,pool,band=2,penalty_scale=.1); baseline_scores=.5*base.scores.to(self.device)
   raw_windows=_standardized_windows(raw).to(self.device)
   fold=_fold_id(context['dataset'],context['signal'])
-  active={kind:self.models[f'fold{fold}_{kind}'] for kind in ('full','no_reference')}
+  required={}
+  for spec in variants.values():
+   kind=str(spec.get('selector','T3'))
+   if kind=='T3': continue
+   model_key=str(spec.get('checkpoint','full'))
+   required.setdefault(model_key,set()).add(_learned_cost_kind(kind))
   encoded={}
-  for key,model in active.items():
-   output=model(raw_windows,patch)
-   encoded[key]=output['numeric'],output['fused']
+  for key,kinds in required.items():
+   model=self.models[f'fold{fold}_{key}']
+   # Late fusion and TS-only depend only on the independent numeric branch.
+   # Avoid evaluating visual projection and Cross-Attention when fused tokens
+   # are not requested. This is score preserving and substantially reduces
+   # the corrected Late-joint rerun cost.
+   if 'fused' in kinds:
+    output=model(raw_windows,patch)
+    encoded[key]={'numeric':output['numeric'],'fused':output['fused']}
+   else:
+    encoded[key]={'numeric':model.numeric(raw_windows)}
   costsets={}
   scales={}
-  for key,(numeric,fused) in encoded.items():
-   nc,fc=_token_costs(numeric,pool),_token_costs(fused,pool)
-   nc,nscale=_calibrate(visual,nc); fc,fscale=_calibrate(visual,fc)
-   costsets[(key,'numeric')]=nc; costsets[(key,'fused')]=fc; scales[key]={'numeric':nscale,'fused':fscale}
+  for key,outputs in encoded.items():
+   scales[key]={}
+   for learned_kind,tokens in outputs.items():
+    costs=_token_costs(tokens,pool); costs,scale=_calibrate(visual,costs)
+    costsets[(key,learned_kind)]=costs; scales[key][learned_kind]=scale
   shared_seconds=self._clock()-started; matches={'T3':base}
   weight=.25
   for name,spec in variants.items():
