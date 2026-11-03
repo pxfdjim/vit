@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "experiment_name": "orionbench_amr_feature_scoring",
+  "preregistered_date": "2026-11-03",
+  "seed": 20261103,
+  "amr_source_run": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/runs/amr_orionbench_native_20261103",
+  "numeric_source_run": "/home/pengxf/jim/VLM4TS/.worktrees/amr-numeric-evidence-14ac908/data/runs/orionbench_numeric_evidence_20261103_2ba885b",
+  "normalization_stats": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/runs/amr_orionbench_native_20261103/normalization_stats.json",
+  "checkpoints": {
+    "realTraffic": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/realTraffic.pt",
+    "realTweets": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/realTweets.pt",
+    "SMAP": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/SMAP.pt",
+    "MSL": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/MSL.pt",
+    "artificialWithAnomaly": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/artificialWithAnomaly.pt",
+    "realAdExchange": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/realAdExchange.pt",
+    "realAWSCloudwatch": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/realAWSCloudwatch.pt",
+    "YAHOOA1": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/YAHOOA1.pt",
+    "YAHOOA2": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/YAHOOA2.pt",
+    "YAHOOA3": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/YAHOOA3.pt",
+    "YAHOOA4": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints/YAHOOA4.pt"
+  },
+  "cache": {
+    "final_cache_roots": [
+      "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/cache/amr_orionbench_native_20261103/final",
+      "/home/pengxf/jim/VLM4TS/.worktrees/vfg-paired-d593dfb/data/runs/vfg_paired_20261027/feature_cache",
+      "/home/pengxf/jim/VLM4TS/.worktrees/vfg-paired-d593dfb/data/runs/vfg_paired_yahoo_20261028/feature_cache"
+    ],
+    "block_cache_roots": [
+      "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/cache/amr_orionbench_native_20261103/block6",
+      "/home/pengxf/jim/VLM4TS/.worktrees/curve-aware-c433a60/data/runs/curve_aware_20261028_01/curve_cache"
+    ]
+  },
+  "fixed_protocol": {
+    "window_size": 224,
+    "step_size": 56,
+    "patch_points": 16,
+    "dtw_band": 2,
+    "dtw_penalty_scale": 0.1,
+    "amr_selector_weight": 0.25,
+    "primary_evidence_weight": 0.1,
+    "sensitivity_evidence_weights": [0.05, 0.2],
+    "paired_evidence_split": "equal",
+    "point_score_calibration": "positive_median_match_to_visual_base",
+    "reference_volatility": "combined_patch_mad_and_first_difference_mad",
+    "reference_volatility_ratio_clip": [0.5, 4.0]
+  },
+  "variants_order": [
+    "T3", "AMR_native",
+    "E2_T3_raw_l005", "E2_T3_raw_l010", "E2_T3_raw_l020",
+    "A_level_only", "A_dynamic_only", "A_combined_only",
+    "A_AMR_level_l010", "A_AMR_dynamic_l010",
+    "A_AMR_combined_l005", "A_AMR_combined_l010", "A_AMR_combined_l020",
+    "B1_numeric_feature",
+    "B2_numeric_l005", "B2_numeric_l010", "B2_numeric_l020",
+    "B3_raw_numeric_l005", "B3_raw_numeric_l010", "B3_raw_numeric_l020",
+    "C1_cross_l005", "C1_cross_l010", "C1_cross_l020",
+    "C2_raw_cross_l005", "C2_raw_cross_l010", "C2_raw_cross_l020",
+    "C3_raw_late_l005", "C3_raw_late_l010", "C3_raw_late_l020",
+    "C4_raw_numeric_l005", "C4_raw_numeric_l010", "C4_raw_numeric_l020",
+    "D_E2_rawvol_l005", "D_E2_rawvol_l010", "D_E2_rawvol_l020",
+    "D_B2_numericvol_l005", "D_B2_numericvol_l010", "D_B2_numericvol_l020",
+    "D_C2_raw_crossvol_l005", "D_C2_raw_crossvol_l010", "D_C2_raw_crossvol_l020",
+    "D_C3_raw_latevol_l005", "D_C3_raw_latevol_l010", "D_C3_raw_latevol_l020",
+    "D_C4_raw_numericvol_l005", "D_C4_raw_numericvol_l010", "D_C4_raw_numericvol_l020"
+  ],
+  "macro_scopes": {
+    "all_11": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch", "YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"],
+    "real_6": ["realTraffic", "realTweets", "SMAP", "MSL", "realAdExchange", "realAWSCloudwatch"],
+    "yahoo_4": ["YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"]
+  },
+  "evaluation": {
+    "affiliation_alpha": 0.01,
+    "threshold_method": "mean",
+    "smoothing": true,
+    "sliding": false,
+    "anomaly_padding": 0,
+    "empty_prediction_f1_zero": true,
+    "single_class_policy": "exclude_same_four_for_all_models"
+  }
+}
