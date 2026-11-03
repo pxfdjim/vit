@@ -89,6 +89,9 @@ def main() -> int:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--mindts-root", type=Path, required=True)
+    parser.add_argument("--worker-index", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--combine-shards", action="store_true")
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     truth = load_truth(args.data_root)
@@ -96,8 +99,14 @@ def main() -> int:
     metric_rows, event_rows, event_details = [], [], []
     distribution_rows, correlation_rows, alignment_rows = [], [], []
 
-    for dataset in DATASETS:
+    task_index = 0
+    if not args.combine_shards:
+      for dataset in DATASETS:
         for signal in signal_names(args.data_root, dataset):
+            current_index = task_index
+            task_index += 1
+            if current_index % args.num_workers != args.worker_index:
+                continue
             frame = evaluation_frame(args.data_root, dataset, signal)
             labels = labels_for(frame, truth[signal])
             events = _events(labels)
@@ -195,11 +204,50 @@ def main() -> int:
                         if np.std(scores) and np.std(t3_score) else np.nan,
                 })
 
-    per_signal = pd.DataFrame(metric_rows)
+    shard_names = {
+        "metrics": "metrics_per_signal", "events": "event_counts_per_signal",
+        "event_details": "event_details", "distributions": "feature_distributions_per_signal",
+        "correlations": "feature_correlations_per_signal", "alignment": "alignment_audit",
+    }
+    if args.combine_shards:
+        shard_root = args.output_root / "evaluation_shards"
+        def read_shards(stem: str) -> pd.DataFrame:
+            paths = sorted(shard_root.glob(f"{stem}_worker_*.csv"))
+            if len(paths) != args.num_workers:
+                raise RuntimeError(f"expected {args.num_workers} {stem} shards, found {len(paths)}")
+            return pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
+        per_signal = read_shards(shard_names["metrics"])
+        event_frame = read_shards(shard_names["events"])
+        event_detail = read_shards(shard_names["event_details"])
+        distribution = read_shards(shard_names["distributions"])
+        correlations = read_shards(shard_names["correlations"])
+        alignment = read_shards(shard_names["alignment"])
+    else:
+        per_signal = pd.DataFrame(metric_rows)
+        event_frame = pd.DataFrame(event_rows)
+        event_detail = pd.DataFrame(event_details)
+        distribution = pd.DataFrame(distribution_rows)
+        correlations = pd.DataFrame(correlation_rows)
+        alignment = pd.DataFrame(alignment_rows)
+        if args.num_workers > 1:
+            shard_root = args.output_root / "evaluation_shards"
+            shard_root.mkdir(parents=True, exist_ok=True)
+            raw_frames = {
+                "metrics": per_signal, "events": event_frame, "event_details": event_detail,
+                "distributions": distribution, "correlations": correlations,
+                "alignment": alignment,
+            }
+            for key, frame in raw_frames.items():
+                frame.to_csv(shard_root / f"{shard_names[key]}_worker_{args.worker_index:02d}.csv",
+                             index=False)
+            print(json.dumps({"status": "passed", "worker_index": args.worker_index,
+                              "num_workers": args.num_workers,
+                              "metric_rows": len(per_signal)}, indent=2))
+            return 0
+
     by_dataset, by_scope = aggregate(per_signal, config)
     delta_dataset = deltas(by_dataset, "dataset", ["T3", "AMR_native", "E2_T3_raw_l010"])
     delta_scope = deltas(by_scope, "scope", ["T3", "AMR_native", "E2_T3_raw_l010"])
-    event_frame = pd.DataFrame(event_rows)
     event_summary = event_frame.groupby(["dataset", "variant"], as_index=False).agg(
         signals=("signal", "count"), true_events=("true_events", "sum"),
         tp_events=("tp_events", "sum"), fn_events=("fn_events", "sum"),
@@ -208,7 +256,6 @@ def main() -> int:
         signals=("signal", "count"), true_events=("true_events", "sum"),
         tp_events=("tp_events", "sum"), fn_events=("fn_events", "sum"),
         fp_intervals=("fp_intervals", "sum"), predicted_intervals=("predicted_intervals", "sum"))
-    event_detail = pd.DataFrame(event_details)
     pivot = event_detail.pivot_table(index=["dataset", "signal", "event_index", "start", "end"],
                                      columns="variant", values="detected", aggfunc="first").reset_index()
     complement_rows = []
@@ -236,7 +283,6 @@ def main() -> int:
                     "delta_fp_intervals": int(row.fp_intervals - base.fp_intervals),
                 })
     event_deltas = pd.DataFrame(event_delta_rows)
-    distribution = pd.DataFrame(distribution_rows)
     distribution_dataset = distribution.groupby(["dataset", "feature"], as_index=False).agg(
         signals=("signal", "count"), mean=("mean", "mean"), std=("std", "mean"),
         q90=("q90", "mean"), q99=("q99", "mean"),
@@ -244,14 +290,11 @@ def main() -> int:
             "anomaly_minus_high_volatility_normal_in_normal_iqr", "median"),
         normal_volatility_spearman=("normal_volatility_spearman", "mean"),
         mean_reference_volatility_ratio=("mean_reference_volatility_ratio", "mean"))
-    correlations = pd.DataFrame(correlation_rows)
     correlation_dataset = correlations.groupby(["dataset", "feature"], as_index=False).agg(
         signals=("signal", "count"), pearson_with_raw_E2=("pearson_with_raw_E2", "mean"),
         spearman_with_raw_E2=("spearman_with_raw_E2", "mean"),
         pearson_with_T3=("pearson_with_T3", "mean"),
         spearman_with_T3=("spearman_with_T3", "mean"))
-    alignment = pd.DataFrame(alignment_rows)
-
     manifest_paths = sorted((args.output_root / "inference_manifests").glob("*.json"))
     manifests = [json.loads(path.read_text()) for path in manifest_paths]
     records = [record for manifest in manifests for record in manifest["records"]
