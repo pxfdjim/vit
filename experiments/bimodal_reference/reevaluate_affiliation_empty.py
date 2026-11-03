@@ -160,8 +160,30 @@ def main() -> int:
                 ranking_rows.append({"scope": scope, "metric": metric, "rank": rank + 1,
                                      "variant": row.variant, "value": row[metric]})
     rankings = pd.DataFrame(ranking_rows)
+    aff_ranking_rows = []
+    for scope in config["macro_scopes"]:
+        before_group = before_scope[before_scope.scope == scope].sort_values("aff_f1", ascending=False)
+        after_group = by_scope[by_scope.scope == scope].sort_values("aff_f1", ascending=False)
+        before_rank = {variant: rank for rank, variant in enumerate(before_group.variant, start=1)}
+        after_rank = {variant: rank for rank, variant in enumerate(after_group.variant, start=1)}
+        for variant in variants:
+            aff_ranking_rows.append({
+                "scope": scope,
+                "variant": variant,
+                "rank_before": before_rank[variant],
+                "rank_after": after_rank[variant],
+                "rank_change_after_minus_before": after_rank[variant] - before_rank[variant],
+            })
+    aff_ranking_comparison = pd.DataFrame(aff_ranking_rows)
     audit = pd.DataFrame(audit_rows)
     excluded = pd.DataFrame(excluded_rows).drop_duplicates()
+    empty_summary = (per_signal.groupby("variant", sort=False)
+                     .agg(signals=("signal", "size"),
+                          eligible_signals=("excluded_reason", lambda x: int((x == "").sum())),
+                          excluded_single_class_signals=("excluded_reason", lambda x: int((x != "").sum())),
+                          empty_prediction_signals=("empty_prediction_zero_applied", "sum"),
+                          aff_f1_valid_signals=("aff_f1", lambda x: int(np.isfinite(x).sum())))
+                     .reset_index())
     outputs = {
         "metrics_per_signal.csv": per_signal,
         "metrics_by_dataset.csv": by_dataset,
@@ -170,6 +192,8 @@ def main() -> int:
         "aff_f1_before_after_by_scope.csv": scope_comparison,
         "aff_f1_deltas_vs_t3.csv": scope_delta_frame,
         "metric_rankings.csv": rankings,
+        "aff_f1_rankings_before_after.csv": aff_ranking_comparison,
+        "empty_prediction_summary.csv": empty_summary,
         "excluded_signals.csv": excluded,
         "recalculation_audit.csv": audit,
     }
@@ -180,14 +204,17 @@ def main() -> int:
     vus_same = bool(audit.vus_pr_unchanged.all() and audit.vus_roc_unchanged.all())
     fixed_same = bool(audit.threshold_matches_before.all() and audit.interval_count_matches_before.all())
     zero_rows = per_signal.empty_prediction_zero_applied.sum()
+    empty_counts = dict(zip(empty_summary.variant, empty_summary.empty_prediction_signals.astype(int)))
     complete = (len(per_signal) == 492 * len(variants) and len(excluded) == 4 and
-                same_aff_set and vus_same and fixed_same and zero_rows > 0)
+                same_aff_set and vus_same and fixed_same and zero_rows > 0 and
+                all(empty_counts[variant] > 0 for variant in variants))
     validation = {
         "status": "passed" if complete else "failed",
         "source_score_files": len(list((args.source_run / "point_scores").glob("*/*/*.npz"))),
         "metric_rows": len(per_signal), "excluded_signals": len(excluded),
         "common_aff_valid_signals_per_variant": expected_valid,
         "empty_prediction_rows_set_to_zero": int(zero_rows),
+        "empty_prediction_rows_by_variant": empty_counts,
         "thresholds_and_intervals_match_before": fixed_same,
         "vus_values_unchanged": vus_same, "f1_max_computed": False,
         "mindts_commit": MINDTS_COMMIT,
@@ -218,6 +245,10 @@ def main() -> int:
 
 {md(scope_comparison)}
 
+## Aff-F1 ranking before and after
+
+{md(aff_ranking_comparison)}
+
 ## Corrected Aff-F1 differences relative to T3
 
 {md(scope_delta_frame)}
@@ -232,15 +263,18 @@ def main() -> int:
 - Every variant has exactly `{expected_valid}` valid Aff-F1 signals. Four all-normal signals remain `NaN` for all three metrics.
 - Including complete misses lowers every Aff-F1 macro. It removes the model-dependent valid-count bias present in the earlier table.
 
+{md(empty_summary)}
+
 ## Result interpretation
 
-T3 remains first on All-11 and Real-6 Aff-F1 after the correction. The correction changes absolute Aff-F1 values and some gaps because the four models produce different numbers of empty predictions, but it does not reverse the central conclusion: dataset-native AMR does not outperform T3 overall. Yahoo-4 continues to show small method-dependent differences rather than a stable AMR advantage.
+T3 remains first on All-11 and Real-6 Aff-F1 after the correction, and becomes first on Yahoo-4 as well. The correction changes the remaining ordering because the old averages excluded different complete misses: All-11 changes from `T3 > TS-only > AMR > Late-joint` to `T3 > Late-joint > AMR > TS-only`; Real-6 changes from `T3 > AMR > TS-only > Late-joint` to `T3 > Late-joint > AMR > TS-only`; Yahoo-4 changes from `TS-only > T3 > AMR > Late-joint` to `T3 > Late-joint > AMR > TS-only`. Dataset-native AMR therefore still does not outperform T3 overall, and the corrected common evaluation set removes the apparent Yahoo Aff-F1 advantage.
 
 ## Artifacts
 
 - `metrics_per_signal.csv`, `metrics_by_dataset.csv`, `metrics_by_scope.csv`
 - `aff_f1_before_after_by_dataset.csv`, `aff_f1_before_after_by_scope.csv`
-- `aff_f1_deltas_vs_t3.csv`, `metric_rankings.csv`
+- `aff_f1_deltas_vs_t3.csv`, `metric_rankings.csv`, `aff_f1_rankings_before_after.csv`
+- `empty_prediction_summary.csv`
 - `excluded_signals.csv`, `recalculation_audit.csv`, `validation.json`
 """
     (args.output_root / "amr_orionbench_affiliation_fix_report.md").write_text(report)
