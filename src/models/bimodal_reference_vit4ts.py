@@ -1,6 +1,6 @@
 """Trainable visual/numeric reference routing around immutable T3 scoring."""
 from __future__ import annotations
-import hashlib, time
+import hashlib, json, time
 from pathlib import Path
 from typing import Any, Mapping
 import numpy as np
@@ -24,6 +24,13 @@ def _standardized_windows(raw):
  mad=1.4826*np.median(np.abs(y-med)); q1,q3=np.quantile(y,[.25,.75]); scale=max(mad,(q3-q1)/1.349,np.std(y)*.1,EPS)
  x=torch.from_numpy(((y-med)/scale).astype(np.float32))
  return x.unfold(0,224,56).contiguous()
+
+def _fitted_standardized_windows(raw,stats,start_index):
+ """Apply normalization fitted on the declared unlabeled training source."""
+ values=np.asarray(raw,np.float64); x=start_index+np.arange(len(values),dtype=np.float64)
+ trend=float(stats['trend_intercept'])+float(stats['trend_slope'])*x
+ normalized=(values-trend-float(stats['center']))/float(stats['scale'])
+ return torch.from_numpy(normalized.astype(np.float32)).unfold(0,224,56).contiguous()
 
 def _positive_median(costs):
  x=torch.cat([c.reshape(-1).cpu() for c in costs]); x=x[torch.isfinite(x)&(x>EPS)]
@@ -69,16 +76,29 @@ class BimodalReferenceBackend:
   self.device=torch.device('cuda' if str(device)=='auto' and torch.cuda.is_available() else device)
   self.cache_dir=Path(cache_dir); roots=self.cache_config.get('final_cache_roots',[])
   self.final_cache_roots=[Path(x) for x in ([roots] if isinstance(roots,(str,Path)) else roots)]
+  block_roots=self.cache_config.get('block_cache_roots',[])
+  self.block_cache_roots=[self.cache_dir]+[Path(x) for x in ([block_roots] if isinstance(block_roots,(str,Path)) else block_roots)]
+  self.checkpoint_protocol=str(self.model_config.get('checkpoint_protocol','cross_fit'))
   checkpoints=self.model_config.get('checkpoints',{})
   self.models={name:load_model(path,self.device)[0] for name,path in checkpoints.items()}
-  expected={f'fold{fold}_{kind}' for fold in range(3) for kind in ('full','no_reference')}
-  if set(self.models)!=expected: raise ValueError(f'expected cross-fit checkpoints: {expected}')
+  if self.checkpoint_protocol=='cross_fit':
+   expected={f'fold{fold}_{kind}' for fold in range(3) for kind in ('full','no_reference')}
+   if set(self.models)!=expected: raise ValueError(f'expected cross-fit checkpoints: {expected}')
+   self.native_stats={}
+  elif self.checkpoint_protocol=='dataset_native':
+   expected=set(config.get('datasets',[]))
+   if set(self.models)!=expected: raise ValueError(f'expected one checkpoint per dataset: {expected}')
+   self.native_stats=json.loads(Path(self.model_config['normalization_stats']).read_text())
+  else: raise ValueError(f'unsupported checkpoint protocol: {self.checkpoint_protocol}')
  def _clock(self):
   if self.device.type=='cuda': torch.cuda.synchronize(self.device)
   return time.perf_counter()
  def _load(self,raw,context):
   digest=input_digest(raw); windows=expected_window_count(len(raw)); _,fp=load_final_tokens(self.final_cache_roots,context,digest,windows)
-  final=torch.load(fp,map_location='cpu',weights_only=True); bp=intermediate_cache_path(self.cache_dir,context,digest)
+  final=torch.load(fp,map_location='cpu',weights_only=True)
+  candidates=[intermediate_cache_path(root,context,digest) for root in self.block_cache_roots]
+  bp=next((path for path in candidates if path.is_file()),None)
+  if bp is None: raise FileNotFoundError('missing Block-6 cache; checked '+', '.join(map(str,candidates)))
   block=torch.load(bp,map_location='cpu',weights_only=True); validate_intermediate_cache(block,digest=digest,expected_windows=windows,path=bp)
   return final,block,digest,fp,bp
  @torch.inference_mode()
@@ -89,8 +109,13 @@ class BimodalReferenceBackend:
   pool=select_common_visual_windows(final_patch); pool_digest=_pool_digest(pool.window_ids,pool.valid)
   started=self._clock(); visual=_visual_costs(patch.reshape(nw,14,14,-1),pool)
   base=match_paths(visual,pool,band=2,penalty_scale=.1); baseline_scores=.5*base.scores.to(self.device)
-  raw_windows=_standardized_windows(raw).to(self.device)
-  fold=_fold_id(context['dataset'],context['signal'])
+  if self.checkpoint_protocol=='dataset_native':
+   fitted=self.native_stats[context['dataset']][context['signal']]
+   start=int(fitted['fit_points']) if context['dataset'] in {'MSL','SMAP'} else 0
+   raw_windows=_fitted_standardized_windows(raw,fitted,start).to(self.device)
+   fold=None
+  else:
+   raw_windows=_standardized_windows(raw).to(self.device); fold=_fold_id(context['dataset'],context['signal'])
   required={}
   for spec in variants.values():
    kind=str(spec.get('selector','T3'))
@@ -99,7 +124,7 @@ class BimodalReferenceBackend:
    required.setdefault(model_key,set()).add(_learned_cost_kind(kind))
   encoded={}
   for key,kinds in required.items():
-   model=self.models[f'fold{fold}_{key}']
+   model=self.models[context['dataset']] if self.checkpoint_protocol=='dataset_native' else self.models[f'fold{fold}_{key}']
    # Late fusion and TS-only depend only on the independent numeric branch.
    # Avoid evaluating visual projection and Cross-Attention when fused tokens
    # are not requested. This is score preserving and substantially reduces
@@ -138,7 +163,9 @@ class BimodalReferenceBackend:
      'candidate_pool_digest':pool_digest,'reference_change_fraction':float(ref_changed.float().mean()),'path_change_fraction':float(path_changed.float().mean()),
      'learned_cost_scales':scales.get(str(spec.get('checkpoint','full')),{}),'shared_encoding_and_cost_seconds':shared_seconds,
      'matching_seconds':elapsed,'inference_seconds':elapsed,'n_windows':nw,'input_digest':digest[:20],'final_cache_path':str(fp),'block_cache_path':str(bp),
-     'final_anomaly_evidence':'T3_visual_only','cross_fit_eval_fold':fold,'max_common_visual_windows':MAX_COMMON_WINDOWS,'overlap_radius':OVERLAP_RADIUS},
+     'final_anomaly_evidence':'T3_visual_only','checkpoint_protocol':self.checkpoint_protocol,
+     'training_dataset':context['dataset'] if self.checkpoint_protocol=='dataset_native' else None,
+     'cross_fit_eval_fold':fold,'max_common_visual_windows':MAX_COMMON_WINDOWS,'overlap_radius':OVERLAP_RADIUS},
     'timing':{'shared_encoding_and_cost_seconds':shared_seconds,'matching_seconds':elapsed,'inference_seconds':elapsed},
     'diagnostics':{'reference_window_ids':_diagnostic_numpy(match.reference_ids),'reference_columns':_diagnostic_numpy(match.reference_columns),
      'visual_local_costs':_diagnostic_numpy(local),'t3_reference_window_ids':_diagnostic_numpy(base.reference_ids),
