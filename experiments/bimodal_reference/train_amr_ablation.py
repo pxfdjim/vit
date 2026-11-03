@@ -108,13 +108,23 @@ def main() -> int:
     history, peak, updates = [], 0, 0
     started = time.perf_counter()
     epochs = int(config["training"]["epochs"])
+    # Each dataset cache fits comfortably on a 24 GiB training GPU. Keeping it
+    # resident removes repeated host-memory and PCIe traffic. The CPU-seeded
+    # randperm below is the same sampler operation used by DataLoader, so batch
+    # membership and order remain fixed by the original generator.
+    resident_raw = cached["raw"].to(args.device)
+    resident_visual = cached["visual"].float().to(args.device)
+    batch_size = int(config["training"]["batch_size"])
+    index_loader = DataLoader(torch.arange(len(dataset)), batch_size=batch_size,
+                              shuffle=True, generator=generator, drop_last=True, num_workers=0)
     # Random and no-objective controls are materialized without pretending that
     # data passes are optimization.  Their requested budget is recorded below.
     if optimizer is not None:
         for epoch in range(epochs):
             model.train(); sums: dict[str, float] = {}; batches = 0
-            for raw, visual in loader:
-                raw, visual = raw.to(args.device), visual.to(args.device)
+            for indices in index_loader:
+                indices = indices.to(args.device)
+                raw, visual = resident_raw[indices], resident_visual[indices]
                 augmented = (raw * (0.9 + 0.2 * torch.rand(raw.shape[0], 1, device=args.device))
                              + 0.01 * torch.randn_like(raw))
                 if objective == "numeric_reconstruction":
@@ -155,6 +165,7 @@ def main() -> int:
         "completed_epochs": len(history), "checkpoint_selection": "fixed_final_epoch",
         "labels_used": False, "validation_split_used": False,
         "source_cache": str(args.cache), "seed": seed,
+        "data_staging": "dataset_cache_gpu_resident_seeded_cpu_randperm",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, args.output)
