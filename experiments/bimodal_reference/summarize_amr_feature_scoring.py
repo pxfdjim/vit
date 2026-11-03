@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pandas as pd
@@ -59,6 +60,8 @@ def main() -> int:
     args = parser.parse_args()
     root = args.output_root
     config = json.loads(args.config.read_text())
+    code_commit = subprocess.check_output(
+        ["git", "rev-parse", "--short", "HEAD"], text=True).strip()
     scope = pd.read_csv(root / "metrics_by_scope.csv")
     dataset = pd.read_csv(root / "metrics_by_dataset.csv")
     delta_scope = pd.read_csv(root / "metric_deltas_by_scope.csv")
@@ -133,6 +136,7 @@ def main() -> int:
 ## Protocol and integrity
 
 - The run reuses the eleven immutable dataset-specific AMR checkpoints. No encoder is retrained, and no evaluation label is used during inference, score calibration, weighting or model selection.
+- The experiment was preregistered at commit `c41f246`; the complete inference, evaluation, audit and report code is commit `{code_commit}` in the isolated worktree.
 - MSL/SMAP use official NASA Train statistics and official Test evaluation. Yahoo and NAB use the established complete-sequence transductive protocol. All 11 datasets and 492 evaluation signals are covered.
 - B/C/D retain the exact T3 reference and constrained-DTW path. Experiment A alone reconstructs the AMR-native reference and path. Evidence weights `0.05`, `0.10` and `0.20` were fixed in advance; `0.10` is the primary configuration.
 - Aff-F1 uses fixed `alpha=0.01`; a complete miss with real events contributes zero. The same four all-normal signals remain undefined for every method, leaving 488 common valid signals. VUS-PR and VUS-ROC use continuous scores.
