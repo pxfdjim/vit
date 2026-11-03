@@ -84,7 +84,22 @@ def fast_vus(labels: np.ndarray, scores: np.ndarray) -> VUSResult:
     return VUSResult(float(np.mean(auc_values)), float(np.mean(ap_values)), median_length, max_window)
 
 
-def affiliation_scores(labels: np.ndarray, predictions: np.ndarray, mindts_root: Path):
+def affiliation_scores(
+    labels: np.ndarray,
+    predictions: np.ndarray,
+    mindts_root: Path,
+    *,
+    empty_prediction_f1_zero: bool = False,
+):
+    """Return MindTS Affiliation precision, recall and F1.
+
+    MindTS returns ``precision=NaN`` and ``recall=0`` when ground truth has
+    events but the prediction event list is empty.  Its direct harmonic mean
+    is consequently NaN.  ``empty_prediction_f1_zero`` provides an explicit
+    evaluation policy for this one boundary case: precision remains undefined,
+    recall remains zero, and F1 is recorded as zero so a complete miss is not
+    removed from a macro average.  The default preserves historical outputs.
+    """
     labels, predictions = np.asarray(labels, np.uint8), np.asarray(predictions, np.uint8)
     if labels.min() == labels.max():
         return np.nan, np.nan, np.nan
@@ -95,5 +110,9 @@ def affiliation_scores(labels: np.ndarray, predictions: np.ndarray, mindts_root:
     from ts_benchmark.evaluation.metrics.affiliation.metrics import pr_from_events
     result = pr_from_events(convert_vector_to_events(predictions), convert_vector_to_events(labels), (0, len(labels)))
     precision, recall = float(result["precision"]), float(result["recall"])
+    if empty_prediction_f1_zero and not predictions.any() and labels.any():
+        if not np.isnan(precision) or recall != 0.0:
+            raise RuntimeError("unexpected MindTS empty-prediction affiliation result")
+        return precision, recall, 0.0
     denom = precision + recall
     return precision, recall, 2 * precision * recall / denom if denom > 0 else np.nan
