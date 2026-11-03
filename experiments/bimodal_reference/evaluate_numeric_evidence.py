@@ -220,6 +220,23 @@ def main() -> int:
         signals=("signal", "count"), total_seconds=("elapsed_seconds", "sum"),
         mean_seconds=("elapsed_seconds", "mean"), max_seconds=("elapsed_seconds", "max"))
 
+    source_mechanism = pd.read_csv(Path(config["source_run"]) / "mechanism_summary.csv")
+    source_mechanism = source_mechanism[source_mechanism.variant.isin(["T3", "AMR_native"])]
+    t3_mechanism = source_mechanism[source_mechanism.variant == "T3"].iloc[0]
+    fixed_mechanism = pd.DataFrame([
+        {
+            "variant": variant,
+            "signals": int(t3_mechanism.signals),
+            "windows": int(t3_mechanism.windows),
+            "reference_change_fraction": 0.0,
+            "path_change_fraction": 0.0,
+            "mean_visual_local_cost": float(t3_mechanism.mean_visual_local_cost),
+        }
+        for variant in variants if variant not in {"T3", "AMR_native"}
+    ])
+    mechanism = pd.concat([source_mechanism, fixed_mechanism], ignore_index=True)
+    mechanism = mechanism.set_index("variant").loc[variants].reset_index()
+
     scope_delta = deltas(by_scope, "scope")
     dataset_delta = deltas(by_dataset, "dataset")
     alignment = pd.DataFrame(alignment_rows)
@@ -239,6 +256,7 @@ def main() -> int:
         "gate_per_signal.csv": gates,
         "gate_summary.csv": gate_summary,
         "inference_runtime.csv": runtime,
+        "reference_path_summary.csv": mechanism,
         "alignment_audit.csv": alignment,
     }
     for name, frame in outputs.items():
@@ -334,6 +352,10 @@ def main() -> int:
 
 {md(gate_summary)}
 
+## Reference and DTW path control
+
+{md(mechanism)}
+
 ## Runtime
 
 {md(runtime)}
@@ -355,7 +377,7 @@ All comparisons above are complete prespecified results. Cross-Attention contrib
 - `metric_deltas_by_scope.csv`, `metric_deltas_by_dataset.csv`
 - `event_counts_*.csv`, `event_deltas_by_dataset.csv`, `event_complementarity.csv`
 - `score_volatility_*.csv`, `gate_per_signal.csv`, `gate_summary.csv`
-- `inference_runtime.csv`, `alignment_audit.csv`, `validation.json`
+- `reference_path_summary.csv`, `inference_runtime.csv`, `alignment_audit.csv`, `validation.json`
 """
     (args.output_root / "numeric_evidence_final_report.md").write_text(report)
     print(json.dumps(validation, indent=2))
