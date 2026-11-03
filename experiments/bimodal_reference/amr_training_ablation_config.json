@@ -12,7 +12,7 @@
   "feature_scoring_run": "/home/pengxf/jim/VLM4TS/.worktrees/amr-feature-scoring-c6e2e39/data/runs/amr_feature_scoring_20261103_c41f246",
   "numeric_evidence_run": "/home/pengxf/jim/VLM4TS/.worktrees/amr-numeric-evidence-14ac908/data/runs/orionbench_numeric_evidence_20261103_2ba885b",
   "normalization_stats": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/runs/amr_orionbench_native_20261103/normalization_stats.json",
-  "mindts_root": "/home/pengxf/jim/VLM4TS/MindTSD",
+  "mindts_root": "/home/pengxf/jim/VLM4TS/.worktrees/unified-aff-vus-1e38ecf/.references/MindTS",
   "cache": {
     "final_cache_roots": [
       "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/cache/amr_orionbench_native_20261103/final",
