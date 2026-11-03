@@ -117,7 +117,7 @@ def main() -> int:
                                         "vus_roc": vus.vus_roc, "aff_threshold": float(threshold),
                                         "predicted_intervals": len(intervals), "excluded_reason": ""})
                 with np.load(args.output_root / "feature_diagnostics" / dataset / signal /
-                             "numeric_scores.npz", allow_pickle=False) as stored:
+                             f"numeric_scores_{args.stage}.npz", allow_pickle=False) as stored:
                     raw_point = stored["point_raw_t3"].astype(np.float64)
                     learned_points = {name: stored[f"point_numeric__{name}"].astype(np.float64)
                                       for name in learned}

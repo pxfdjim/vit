@@ -118,7 +118,8 @@ def main() -> int:
         started = time.perf_counter()
         expected = [args.output_root / "point_scores" / dataset / signal / f"{name}.npz"
                     for name in variants]
-        diagnostic = args.output_root / "feature_diagnostics" / dataset / signal / "numeric_scores.npz"
+        diagnostic = (args.output_root / "feature_diagnostics" / dataset / signal /
+                      f"numeric_scores_{args.stage}.npz")
         if args.skip_complete and diagnostic.is_file() and all(path.is_file() for path in expected):
             records.append({"dataset": dataset, "signal": signal, "status": "skipped_complete"})
             continue
