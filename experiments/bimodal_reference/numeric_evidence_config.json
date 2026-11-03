@@ -20,6 +20,7 @@
   },
   "cache": {
     "final_cache_roots": [
+      "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/cache/amr_orionbench_native_20261103/final",
       "/home/pengxf/jim/VLM4TS/.worktrees/vfg-paired-d593dfb/data/runs/vfg_paired_20261027/feature_cache",
       "/home/pengxf/jim/VLM4TS/.worktrees/vfg-paired-d593dfb/data/runs/vfg_paired_yahoo_20261028/feature_cache"
     ],

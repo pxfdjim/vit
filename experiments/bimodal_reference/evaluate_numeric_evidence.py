@@ -207,8 +207,10 @@ def main() -> int:
                 gate_rows.append({"dataset": dataset, "signal": signal, "gate": gate,
                                   "mean_gate": float(values.mean()), "std_gate": float(values.std()),
                                   "min_gate": float(values.min()), "max_gate": float(values.max())})
-    for path in sorted((args.output_root / "inference_manifests").glob("*.json")):
-        inference_rows.extend(json.loads(path.read_text())["records"])
+    manifest_paths = sorted((args.output_root / "inference_manifests").glob("*.json"))
+    for path in manifest_paths:
+        inference_rows.extend(record for record in json.loads(path.read_text())["records"]
+                              if record["status"] == "passed")
     gates = pd.DataFrame(gate_rows)
     gate_summary = gates.groupby("gate", as_index=False).agg(
         signals=("signal", "count"), mean_gate=("mean_gate", "mean"),
@@ -242,12 +244,13 @@ def main() -> int:
     for name, frame in outputs.items():
         frame.to_csv(args.output_root / name, index=False)
 
-    manifests = [json.loads(path.read_text()) for path in (args.output_root / "inference_manifests").glob("*.json")]
+    manifests = [json.loads(path.read_text()) for path in manifest_paths]
+    recovery_manifests = [item for path, item in zip(manifest_paths, manifests) if "recovery" in path.name]
     expected_scores = 492 * len(variants)
     fixed_variants = [variant for variant in variants if variant not in {"AMR_native"}]
     valid_common = by_scope[by_scope.scope == "all_11"].aff_f1_valid_signals.eq(488).all()
     complete = (len(per_signal) == expected_scores and alignment.valid.all() and valid_common
-                and len(manifests) == 8 and all(item["status"] == "passed" for item in manifests)
+                and len(recovery_manifests) == 8 and all(item["status"] == "passed" for item in recovery_manifests)
                 and len(gates) == 492 * 3)
     validation = {
         "status": "passed" if complete else "failed", "signals": 492,

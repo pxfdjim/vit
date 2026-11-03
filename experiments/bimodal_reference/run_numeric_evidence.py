@@ -83,6 +83,8 @@ def main() -> int:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--skip-complete", action="store_true")
+    parser.add_argument("--manifest-tag", default="initial")
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     source_root = Path(config["source_run"])
@@ -98,6 +100,13 @@ def main() -> int:
     for ordinal, (dataset, signal) in enumerate(tasks, 1):
         started = time.perf_counter()
         try:
+            expected = [args.output_root / "point_scores" / dataset / signal / f"{variant}.npz"
+                        for variant in config["variants_order"]]
+            diagnostic = args.output_root / "evidence_diagnostics" / dataset / signal / "fixed_t3_evidence.npz"
+            if args.skip_complete and diagnostic.is_file() and all(path.is_file() for path in expected):
+                records.append({"dataset": dataset, "signal": signal, "status": "skipped_complete",
+                                "labels_opened": False})
+                continue
             frame = evaluation_frame(args.data_root, dataset, signal)
             raw = frame.value.to_numpy(np.float64)
             timestamps = frame.timestamp.to_numpy()
@@ -234,7 +243,7 @@ def main() -> int:
                 "records": records, "failures": failures, "labels_opened": False,
                 "code_commit": code_commit}
     publish_json_no_replace(args.output_root / "inference_manifests" /
-                            f"worker_{args.worker_index:02d}_of_{args.num_workers:02d}.json", manifest)
+                            f"worker_{args.worker_index:02d}_of_{args.num_workers:02d}_{args.manifest_tag}.json", manifest)
     return 0 if failures == 0 else 1
 
 
