@@ -43,8 +43,15 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        dest="datasets",
+        help="Dataset to extract (repeatable). Defaults to the two NASA datasets.",
+    )
     args = parser.parse_args()
-    tasks = [(d, s) for d in ("MSL", "SMAP") for s in signal_names(args.data_root, d)]
+    datasets = tuple(args.datasets or ("MSL", "SMAP"))
+    tasks = [(d, s) for d in datasets for s in signal_names(args.data_root, d)]
     tasks = tasks[args.worker_index::args.num_workers]
     stats = load_stats(args.stats)
     config = {"model": {"window_size": 224, "step_size": 56, "patch_size": 16,
@@ -62,7 +69,11 @@ def main() -> int:
             start = normalization_start(dataset, stats[dataset][signal], args.split)
             visual = visual_values(raw, stats[dataset][signal], start)
             digest = input_digest(raw)
-            context_dataset = f"{dataset}__train" if args.split == "train" else dataset
+            context_dataset = (
+                f"{dataset}__train"
+                if args.split == "train" and dataset in NASA
+                else dataset
+            )
             context = {"dataset": context_dataset, "signal": signal}
             count = expected_window_count(len(raw))
             if args.split == "evaluation":
