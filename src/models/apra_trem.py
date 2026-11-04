@@ -70,6 +70,13 @@ class TemporalResidualEvolutionModel(nn.Module):
         self.reliability_fusion = nn.Sequential(
             nn.Linear(4, width // 2), nn.GELU(), nn.Linear(width // 2, branches),
         )
+        # Reliability must remain an active condition when a branch ablation
+        # leaves only one branch (where a one-way softmax is identically one).
+        # A bounded feature-wise modulation keeps the condition effective in
+        # E2, E3 and E4 without creating an independent anomaly classifier.
+        self.reliability_modulation = nn.Sequential(
+            nn.Linear(4, width), nn.Tanh(),
+        )
         self.output_norm = nn.LayerNorm(width)
         self.output = nn.Linear(width, 1)
         nn.init.zeros_(self.output.weight)
@@ -104,6 +111,8 @@ class TemporalResidualEvolutionModel(nn.Module):
         weights = self.reliability_fusion(condition).softmax(-1)
         fused = sum(weights[..., index, None] * value
                     for index, value in enumerate(branch_values))
+        modulation = 1.0 + 0.25 * self.reliability_modulation(condition)
+        fused = fused * modulation
         raw = torch.tanh(self.output(self.output_norm(fused)).squeeze(-1))
         # Residual capacity shrinks near APRA's [-1, 1] boundary, proving that
         # the combined correction remains bounded while preserving APRA at zero.
@@ -115,6 +124,7 @@ class TemporalResidualEvolutionModel(nn.Module):
             "local_dynamics": local_value,
             "multiscale_context": context_value,
             "fusion_weights": weights,
+            "reliability_modulation": modulation,
             "residual_projection": projected,
         }
 

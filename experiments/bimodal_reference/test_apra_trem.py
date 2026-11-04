@@ -54,3 +54,15 @@ def test_branch_ablations_remove_only_the_requested_branch():
     assert sum(p.numel() for p in no_local.parameters()) < sum(p.numel() for p in full.parameters())
     assert sum(p.numel() for p in no_context.parameters()) < sum(p.numel() for p in full.parameters())
 
+
+def test_reliability_conditions_each_single_branch_ablation():
+    for model in (APRATREM(use_local=False), APRATREM(use_multiscale=False)):
+        with torch.no_grad():
+            model.trem.output.weight.fill_(.05)
+        nq, vq, nr, vr, base = inputs()
+        output = model.forward_tokens(nq, vq, nr, vr, base)
+        alignment = dict(output["alignment"])
+        alignment["reliability"] = 1.0 - alignment["reliability"]
+        changed = model.trem(alignment, output["apra_delta"], base)["trem_delta"]
+        assert not torch.allclose(output["trem_delta"], changed)
+
