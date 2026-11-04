@@ -67,6 +67,7 @@ def main() -> int:
     focus = focus[["dataset", "variant", "aff_f1", "vus_pr", "vus_roc"]]
     training_summary = training.groupby("variant", as_index=False).agg(
         checkpoints=("dataset", "count"), total_training_seconds=("elapsed_seconds", "sum"),
+        mean_training_seconds=("elapsed_seconds", "mean"),
         mean_trainable_parameters=("parameters_trainable", "mean"),
         mean_peak_cuda_memory_mib=("peak_cuda_memory_bytes", lambda x: x.mean()/2**20),
         mean_numeric_gradient=("gradient_numeric", "mean"),
@@ -107,7 +108,7 @@ def main() -> int:
         "- **M2**：移除 RCCA，CADM 仅读取视觉/数值差异与参考匹配关系。",
         "- **M3**：使用原 AMR 同窗口 Cross-Attention，保留其余 CADM 与训练目标。",
         "- **M4**：保留 RCCA，仅使用 Patch 对齐与一致性，取消合成异常辨别和排序损失。",
-        "- **M5**：在 M1 推理时循环打乱参考 Token；T3 路径、数值证据和权重保持不变。",
+        "- **M5**：在 M1 推理时跨查询循环并反转时间次序，直接打乱已对齐参考 Token；T3 路径、数值证据和权重保持不变。",
         "- **M6**：使用 M1 数值 Token，但最终分数不接入 S_cross。", "",
         "## 主结果", "",
         "指标顺序为 Aff-F1 / VUS-PR / VUS-ROC。", "",
@@ -136,10 +137,12 @@ def main() -> int:
         lines += [f"### {title}", "", table(pivot), ""]
     lines += [
         "## 最终回答", "",
-        f"1. **M1 是否稳定超过既有 B3：{'是' if every_seed_beats else '没有达到严格的三种子全指标稳定超过'}。** 主种子结果为 `{triplet(m1)}`，B3 为 `{triplet(b3)}`；稳定性表给出三种子的均值和标准差。",
-        "2. **RCCA 的独立收益由 M1−M2 给出。** 若三项变化并非同时为正，则不能宣称 RCCA 对所有指标有普遍独立价值；注意力和 M5 只证明模块真实依赖参考，不等同于性能收益。",
-        "3. **参考条件交互的收益由 M1−M3 给出，正确参考的必要性由 M1−M5 给出。** 两项必须结合指标、事件恢复和剧烈波动分离判断，不能仅凭参考敏感度作结论。",
-        "4. **新自监督目标的收益由 M1−M4 给出，S_cross 的最终评分贡献由 M1−M6 给出。** M6 保留相同数值编码器和总证据预算，因此差异直接对应 CADM 跨模态证据。", "",
+        f"1. **M1 没有稳定超过既有 B3。** 主种子为 `{triplet(m1)}`，B3 为 `{triplet(b3)}`；All-11 三项分别变化 `{m1.aff_f1-b3.aff_f1:+.6f}/{m1.vus_pr-b3.vus_pr:+.6f}/{m1.vus_roc-b3.vus_roc:+.6f}`。三个种子的 All-11 均值为 `0.731022/0.388294/0.838141`，仍未在三项上超过 B3。",
+        "2. **RCCA 没有显示独立的普遍性能价值。** M1 相对 M2 仅 Aff-F1 `+0.000220`，VUS-PR/VUS-ROC 为 `-0.000986/-0.000137`。非零梯度、注意力和参考替换效应证明 RCCA 真实参与了训练与推理，但没有转化为稳定指标收益。",
+        "3. **参考条件交互与正确参考有局部价值，但不构成全指标必要性。** M1 相对同窗口 M3 为 `+0.008521/+0.001204/-0.000123`；相对打乱参考 M5 为 `+0.003348/+0.001999/-0.000546`。正确参考改善 Aff-F1/VUS-PR，却没有改善 All-11 VUS-ROC。",
+        "4. **合成异常辨别与排序目标提供了最清晰的新增训练收益。** M1 相对 M4 在 All-11 三项均提高 `+0.004872/+0.004014/+0.000813`，且 M4 的 CADM Logit 标准差仅 `0.000824`，接近退化为常量输出。",
+        "5. **CADM 的 S_cross 接入最终评分没有收益。** M1 相对 M6 三项为 `-0.001516/-0.004222/-0.004182`；M1 相对 B3 净少 17 个命中事件并增加 36 个误报区间。跨模态分数在 Yahoo 有收益，但 Real-6、AdExchange 和 Traffic 的退化抵消了它。",
+        "6. **本实验没有得到严格不低于 B3 的新简化模型。** M6 是新模型中最强的总体控制，All-11 为 `0.729930/0.394810/0.841876`：VUS-ROC 高于 B3 `+0.001436`，Aff-F1/VUS-PR 仍低 `-0.001916/-0.001151`。既有 C2 简化模型仍是更清晰的工程选择。", "",
         "## 产物", "",
         "- `checkpoints/`、`synthetic_training_cache/`、`point_scores/`、`feature_diagnostics/`。",
         "- `metrics_per_signal.csv`、`metrics_by_dataset.csv`、`metrics_by_scope.csv`、`metric_deltas_*.csv`。",

@@ -135,7 +135,8 @@ def main() -> int:
             errors.append(f"baseline reproduction failed: {variant} {maximum}")
     checks["baseline_reproduction_max_abs_errors"] = reproduction
     diagnostics = pd.read_csv(root / "inference_diagnostics_per_signal.csv")
-    if not np.isfinite(diagnostics["cadm_logit_mean"]).all():
+    cadm_rows = diagnostics[diagnostics.variant != "M6_no_cross_score"]
+    if not np.isfinite(cadm_rows["cadm_logit_mean"]).all():
         errors.append("nonfinite CADM diagnostics")
     result = {"status": "passed" if not errors else "failed", "errors": errors,
               "checks": checks, "labels_used_for_training_or_selection": False}
