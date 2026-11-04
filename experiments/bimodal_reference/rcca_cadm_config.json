@@ -10,7 +10,7 @@
   "training_ablation_run": "/home/pengxf/jim/VLM4TS/.worktrees/amr-training-ablation-dfd84ef/data/runs/amr_training_ablation_20261103_dfd84ef",
   "normalization_stats": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/runs/amr_orionbench_native_20261103/normalization_stats.json",
   "mindts_root": "/home/pengxf/jim/VLM4TS/.worktrees/unified-aff-vus-1e38ecf/.references/MindTS",
-  "clip_checkpoint": "/home/pengxf/.cache/huggingface/hub/models--timm--vit_base_patch16_clip_224.openai/snapshots/9a7c717dbb1f16c1ae430e2c8ca18a8435f07df4/open_clip_pytorch_model.bin",
+  "clip_checkpoint": "/home/pengxf/jim/VLM4TS/model_cache/ViT-B-16.pt",
   "cache": {
     "final_cache_roots": [
       "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/cache/amr_orionbench_native_20261103/final",
@@ -22,9 +22,25 @@
       "/home/pengxf/jim/VLM4TS/.worktrees/curve-aware-c433a60/data/runs/curve_aware_20261028_01/curve_cache"
     ]
   },
-  "datasets": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch", "YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"],
+  "datasets": [
+    "realTraffic",
+    "realTweets",
+    "SMAP",
+    "MSL",
+    "artificialWithAnomaly",
+    "realAdExchange",
+    "realAWSCloudwatch",
+    "YAHOOA1",
+    "YAHOOA2",
+    "YAHOOA3",
+    "YAHOOA4"
+  ],
   "primary_seed": 20261104,
-  "stability_seeds": [20261104, 20261105, 20261106],
+  "stability_seeds": [
+    20261104,
+    20261105,
+    20261106
+  ],
   "training": {
     "epochs": 16,
     "batch_size": 32,
@@ -38,14 +54,35 @@
     "gradient_clip": 1.0
   },
   "synthetic": {
-    "types": ["amplitude_jump", "trend_shift", "frequency_change", "volatility_burst", "morphology"],
+    "types": [
+      "amplitude_jump",
+      "trend_shift",
+      "frequency_change",
+      "volatility_burst",
+      "morphology"
+    ],
     "min_patch_span": 2,
     "max_patch_span": 5,
-    "amplitude_range": [1.5, 3.0],
-    "trend_range": [1.0, 2.5],
-    "frequency_cycles_range": [2.0, 5.0],
-    "volatility_range": [1.0, 2.0],
-    "morphology_mix_range": [0.5, 1.0]
+    "amplitude_range": [
+      1.5,
+      3.0
+    ],
+    "trend_range": [
+      1.0,
+      2.5
+    ],
+    "frequency_cycles_range": [
+      2.0,
+      5.0
+    ],
+    "volatility_range": [
+      1.0,
+      2.0
+    ],
+    "morphology_mix_range": [
+      0.5,
+      1.0
+    ]
   },
   "loss_weights": {
     "patch": 1.0,
@@ -55,23 +92,73 @@
     "ranking_margin": 0.5
   },
   "variants": {
-    "M1_full": {"architecture": "rcca", "synthetic": true, "ranking": true},
-    "M2_no_rcca": {"architecture": "no_rcca", "synthetic": true, "ranking": true},
-    "M3_same_window": {"architecture": "same_window", "synthetic": true, "ranking": true},
-    "M4_no_synthetic_objective": {"architecture": "rcca", "synthetic": false, "ranking": false}
+    "M1_full": {
+      "architecture": "rcca",
+      "synthetic": true,
+      "ranking": true
+    },
+    "M2_no_rcca": {
+      "architecture": "no_rcca",
+      "synthetic": true,
+      "ranking": true
+    },
+    "M3_same_window": {
+      "architecture": "same_window",
+      "synthetic": true,
+      "ranking": true
+    },
+    "M4_no_synthetic_objective": {
+      "architecture": "rcca",
+      "synthetic": false,
+      "ranking": false
+    }
   },
   "inference_controls": {
     "M5_shuffled_reference": "M1_full",
     "M6_no_cross_score": "M1_full"
   },
   "score_weights": {
-    "primary": {"visual": 0.9, "raw": 0.05, "numeric": 0.025, "cross": 0.025},
-    "M6_no_cross_score": {"visual": 0.9, "raw": 0.05, "numeric": 0.05, "cross": 0.0}
+    "primary": {
+      "visual": 0.9,
+      "raw": 0.05,
+      "numeric": 0.025,
+      "cross": 0.025
+    },
+    "M6_no_cross_score": {
+      "visual": 0.9,
+      "raw": 0.05,
+      "numeric": 0.05,
+      "cross": 0.0
+    }
   },
   "macro_scopes": {
-    "all_11": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch", "YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"],
-    "real_6": ["realTraffic", "realTweets", "SMAP", "MSL", "realAdExchange", "realAWSCloudwatch"],
-    "yahoo_4": ["YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"]
+    "all_11": [
+      "realTraffic",
+      "realTweets",
+      "SMAP",
+      "MSL",
+      "artificialWithAnomaly",
+      "realAdExchange",
+      "realAWSCloudwatch",
+      "YAHOOA1",
+      "YAHOOA2",
+      "YAHOOA3",
+      "YAHOOA4"
+    ],
+    "real_6": [
+      "realTraffic",
+      "realTweets",
+      "SMAP",
+      "MSL",
+      "realAdExchange",
+      "realAWSCloudwatch"
+    ],
+    "yahoo_4": [
+      "YAHOOA1",
+      "YAHOOA2",
+      "YAHOOA3",
+      "YAHOOA4"
+    ]
   },
   "evaluation": {
     "affiliation_alpha": 0.01,
