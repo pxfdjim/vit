@@ -63,7 +63,7 @@ def main() -> int:
     )
     for column in ("gradient_detect_apra", "gradient_detect_trem",
                    "residual_input_effect", "reliability_input_effect"):
-        train[column] = train[column].map(lambda value: f"{value:.3e}")
+        train[column] = train[column].map(lambda value: f"`{value:.3e}`")
     mechanism_summary = mechanism.groupby("variant", as_index=False).agg(
         median_capacity=("capacity_mean", "median"),
         median_zero_capacity_fraction=("zero_capacity_fraction", "median"),
@@ -73,12 +73,16 @@ def main() -> int:
     )
     for column in ("median_capacity", "median_residual_raw_effect",
                    "median_reliability_raw_effect", "median_bounded_delta"):
-        mechanism_summary[column] = mechanism_summary[column].map(lambda value: f"{value:.3e}")
+        mechanism_summary[column] = mechanism_summary[column].map(lambda value: f"`{value:.3e}`")
     cost = diagnostics[["variant", "total_inference_seconds", "trem_delta_abs",
                         "local_dynamics_norm", "multiscale_context_norm",
                         "local_fusion_weight", "context_fusion_weight",
                         "trem_score_effect_abs", "retrained_apra_change_vs_E1_abs",
                         "score_change_vs_E1_abs"]]
+    cost = cost.copy()
+    for column in ("trem_delta_abs", "trem_score_effect_abs",
+                   "retrained_apra_change_vs_E1_abs", "score_change_vs_E1_abs"):
+        cost[column] = cost[column].map(lambda value: f"`{value:.3e}`")
     commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
     pareto = all(e2[metric] >= e1[metric] for metric in METRICS)
     e2_diagnostic = diagnostics.set_index("variant").loc["E2_APRA_TREM"]
