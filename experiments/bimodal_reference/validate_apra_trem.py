@@ -31,6 +31,8 @@ def main() -> int:
         errors.append(f"checkpoint count {len(checkpoints)} != {expected_checkpoints}")
     gradient_errors = []; integrity_errors = []; initial_errors = []
     input_effect_errors = []
+    mechanism_path = root / "trem_input_mechanism_audit.csv"
+    mechanism = pd.read_csv(mechanism_path) if mechanism_path.is_file() else pd.DataFrame()
     for path in checkpoints:
         payload = torch.load(path, map_location="cpu", weights_only=True)
         if (payload["labels_used"] or payload["validation_split_used"] or
@@ -49,7 +51,15 @@ def main() -> int:
             gradient_errors.append(f"{path}:L_detect")
         if path_gradient["visual"] != 0 or detect_gradient["visual"] != 0:
             gradient_errors.append(f"{path}:frozen visual")
-        if payload["residual_input_effect"] <= 0 or payload["reliability_input_effect"] <= 0:
+        row = mechanism[(mechanism.variant == payload["variant"]) &
+                        (mechanism.dataset == payload["dataset"])] if len(mechanism) else mechanism
+        raw_valid = (len(row) == 1 and row.iloc[0].residual_raw_effect > 0 and
+                     row.iloc[0].reliability_raw_effect > 0)
+        bounded_valid = (payload["residual_input_effect"] > 0 and
+                         payload["reliability_input_effect"] > 0)
+        capacity_explains_zero = (len(row) == 1 and row.iloc[0].capacity_mean == 0 and
+                                  row.iloc[0].zero_capacity_fraction == 1)
+        if not raw_valid or (not bounded_valid and not capacity_explains_zero):
             input_effect_errors.append(str(path))
     if integrity_errors: errors.append(f"selection/leakage failures {len(integrity_errors)}")
     if initial_errors: errors.append(f"zero/equivalence failures {len(initial_errors)}")
@@ -60,6 +70,7 @@ def main() -> int:
         "zero_initialized_and_E1_equivalent": len(checkpoints) - len(initial_errors),
         "gradient_valid_checkpoints": len(checkpoints) - len(gradient_errors),
         "input_effect_valid_checkpoints": len(checkpoints) - len(input_effect_errors),
+        "mechanism_audit_rows": len(mechanism),
     })
     score_paths = list((root / "point_scores").glob("*/*/*.npz"))
     expected_scores = signals * len(variants)
