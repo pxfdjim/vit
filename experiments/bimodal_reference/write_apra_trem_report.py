@@ -62,6 +62,7 @@ def main() -> int:
     cost = diagnostics[["variant", "total_inference_seconds", "trem_delta_abs",
                         "local_dynamics_norm", "multiscale_context_norm",
                         "local_fusion_weight", "context_fusion_weight",
+                        "trem_score_effect_abs", "retrained_apra_change_vs_E1_abs",
                         "score_change_vs_E1_abs"]]
     commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
     pareto = all(e2[metric] >= e1[metric] for metric in METRICS)
@@ -79,7 +80,7 @@ def main() -> int:
 
 - **Local Residual Dynamics** 对 APRA 的结构残差与未匹配特征投影后计算一阶、二阶变化，再通过两层局部卷积建模突变与短时异常。
 - **Multi-scale Residual Context** 通过 dilation 1/2/4 的深度可分离残差卷积建模持续趋势、周期及子序列变化。
-- 融合权重由 APRA 可靠性、拒配概率、当前 APRA 分数及冻结 B3 Token 证据共同决定。TREM 不读取独立查询特征，无法绕过 APRA 建立独立分类器。
+- 融合权重和有界特征调制由 APRA 可靠性、拒配概率、当前 APRA 分数及冻结 B3 Token 证据共同决定；单分支消融也保留可靠性调制。TREM 不读取独立查询特征，无法绕过 APRA 建立独立分类器。
 
 ## 主结果
 

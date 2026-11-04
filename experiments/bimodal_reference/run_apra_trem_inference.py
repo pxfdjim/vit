@@ -180,14 +180,24 @@ def main() -> int:
                     model, windows, patch, ids, columns,
                 )
                 point, scale = signed_calibration(local, scores["E0_B3"], len(raw), device)
+                point_apra, apra_scale = signed_calibration(
+                    local_apra, scores["E0_B3"], len(raw), device,
+                )
+                trained_apra_score = scores["E0_B3"] + gamma * point_apra
                 scores[variant] = scores["E0_B3"] + gamma * point
                 evidence[f"point_combined_correction__{variant}"] = scores[variant] - scores["E0_B3"]
-                evidence[f"point_trem_change_vs_E1__{variant}"] = scores[variant] - scores["E1_APRA_only"]
+                evidence[f"point_trem_effect__{variant}"] = scores[variant] - trained_apra_score
+                evidence[f"point_retrained_apra_change_vs_E1__{variant}"] = trained_apra_score - scores["E1_APRA_only"]
+                evidence[f"point_total_change_vs_E1__{variant}"] = scores[variant] - scores["E1_APRA_only"]
                 diagnostic.update({
                     "calibration_scale": scale,
+                    "apra_only_calibration_scale": apra_scale,
                     "total_inference_seconds": time.perf_counter() - model_tick,
                     "score_change_vs_E1_mean": float((scores[variant] - scores["E1_APRA_only"]).mean()),
                     "score_change_vs_E1_abs": float(np.abs(scores[variant] - scores["E1_APRA_only"]).mean()),
+                    "trem_score_effect_mean": float((scores[variant] - trained_apra_score).mean()),
+                    "trem_score_effect_abs": float(np.abs(scores[variant] - trained_apra_score).mean()),
+                    "retrained_apra_change_vs_E1_abs": float(np.abs(trained_apra_score - scores["E1_APRA_only"]).mean()),
                 })
                 diagnostics.append({"dataset": dataset, "signal": signal,
                                     "variant": variant, **diagnostic})

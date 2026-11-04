@@ -65,7 +65,7 @@ def shard(args,cfg,variants):
     event_rows.append({"dataset":dataset,"signal":signal,"variant":variant,"true_events":len(events),"tp_events":int(event_hit.sum()),"fn_events":int((~event_hit).sum()),"fp_intervals":false_positives(events,intervals),"predicted_intervals":len(intervals),"event_hits_json":json.dumps(event_hit.astype(int).tolist())})
    with np.load(args.output_root/"feature_diagnostics"/dataset/signal/"evidence.npz") as z: evidence={k:z[k].astype(float) for k in z.files}
    for variant in cfg["variants"]:
-    score=evidence[f"point_trem_change_vs_E1__{variant}"]; iqr=max(float(np.quantile(score[normal],.75)-np.quantile(score[normal],.25)),1e-12)
+    score=evidence[f"point_trem_effect__{variant}"]; iqr=max(float(np.quantile(score[normal],.75)-np.quantile(score[normal],.25)),1e-12)
     feature_rows.append({"dataset":dataset,"signal":signal,"variant":variant,"delta_mean":float(score.mean()),"delta_std":float(score.std()),"positive_fraction":float((score>0).mean()),"negative_fraction":float((score<0).mean()),
       "anomaly_minus_high_volatility_normal_in_normal_iqr":float((np.median(score[labels>0])-np.median(score[high]))/iqr) if (labels>0).any() and high.any() else np.nan,
       "normal_volatility_spearman":corr(spearmanr,score[normal],vol[normal]),"pearson_with_E1":corr(pearsonr,score,score_cache["E1_APRA_only"])})
