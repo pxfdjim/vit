@@ -104,7 +104,12 @@ def main():
         raise RuntimeError(f"invalid TREM gradient path {gradient_after_one_step}")
     if spec["use_local"] and gradient_after_one_step["local"]<=0: raise RuntimeError("local gradient absent")
     if spec["use_multiscale"] and gradient_after_one_step["multiscale"]<=0: raise RuntimeError("context gradient absent")
-    if spec["use_reliability"] and gradient_after_one_step["reliability_fusion"]<=0: raise RuntimeError("reliability gradient absent")
+    if spec["use_reliability"]:
+        reliability_gradient = (gradient_after_one_step["reliability_fusion"]
+                                if spec["use_local"] and spec["use_multiscale"]
+                                else gradient_after_one_step["reliability_modulation"])
+        if reliability_gradient <= 0:
+            raise RuntimeError("reliability gradient absent")
     model.trem.load_state_dict(saved); optimizer=torch.optim.AdamW(trainable,lr=cfg["training"]["learning_rate"],weight_decay=cfg["training"]["weight_decay"])
     history=[]; updates=0; started=time.perf_counter(); torch.cuda.reset_peak_memory_stats(device)
     for epoch in range(cfg["training"]["epochs"]):

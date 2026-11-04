@@ -20,7 +20,8 @@ def main():
   if x["frozen_base_max_abs_change"]!=0: frozen.append(str(path))
   if x["zero_initialization_error"]!=0: zero.append(str(path))
   g=x["gradient_after_one_step"]
-  if g["output"]<=0 or g["projection"]<=0 or (spec["use_local"] and g["local"]<=0) or (spec["use_multiscale"] and g["multiscale"]<=0) or (spec["use_reliability"] and g["reliability_fusion"]<=0): gradient.append(str(path))
+  reliability_gradient=(g["reliability_fusion"] if spec["use_local"] and spec["use_multiscale"] else g["reliability_modulation"])
+  if g["output"]<=0 or g["projection"]<=0 or (spec["use_local"] and g["local"]<=0) or (spec["use_multiscale"] and g["multiscale"]<=0) or (spec["use_reliability"] and reliability_gradient<=0): gradient.append(str(path))
   if x["input_effect"]<=0 or (spec["use_reliability"] and x["reliability_effect"]<=0): effects.append(str(path))
  if frozen: errors.append(f"frozen base changed {frozen[:3]}")
  if zero: errors.append(f"zero equivalence {zero[:3]}")
