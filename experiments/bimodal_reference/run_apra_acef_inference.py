@@ -100,9 +100,10 @@ def main():
                 current=dataset
             evidence={}; full_reference_effect=None
             for variant,model in models.items():
+                model_tick=time.perf_counter()
                 local,diag=model_evidence(model,windows,patch,ids,columns); point,scale=signed_calibration(local,scores["B3"],len(raw),device)
                 scores[variant]=scores["B3"]+gamma*point; evidence[f"point_delta__{variant}"]=point
-                diag.update({"delta_calibration_scale":scale,"inference_seconds":time.perf_counter()-tick})
+                diag.update({"delta_calibration_scale":scale,"inference_seconds":time.perf_counter()-model_tick})
                 diagnostic_rows.append({"dataset":dataset,"signal":signal,"variant":variant,**diag})
                 if variant=="APRA_ACEF": full_reference_effect=diag["unmatched_numeric"]+diag["unmatched_visual"]
             if np.max(np.abs(scores["no_Ldetect"]-scores["B3"]))!=0: raise RuntimeError("no_Ldetect must preserve B3 exactly")
