@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Write final Chinese report for frozen APRA and independent TREM."""
 from __future__ import annotations
-import argparse,json,subprocess
+import argparse,json,subprocess,sys
 from pathlib import Path
 import pandas as pd
+ROOT=Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 from experiments.bimodal_reference.run_apra_trem_independent_inference import beta_code
 M=("aff_f1","vus_pr","vus_roc")
 def table(x): return x.to_markdown(index=False,floatfmt=".6f")
@@ -25,6 +27,20 @@ def main():
  old=diagnostics[diagnostics.model_id=="X_existing"].iloc[0]; new=diagnostics[diagnostics.model_id==f"F_full_s{primary}"].iloc[0]
  local=all11.loc[f"A_no_local_s{primary}_{b}"]; multi=all11.loc[f"A_no_multiscale_s{primary}_{b}"]; rel=all11.loc[f"A_no_reliability_s{primary}_{b}"]; numeric=all11.loc[f"A_numeric_only_s{primary}_{b}"]
  seed_full=seeds[(seeds.scope=="all_11")&(seeds.variant=="F_full")].iloc[0]
+ seed_names=[f"F_full_s{seed}_{b}" for seed in cfg["seeds"]]; seed_values=all11.loc[seed_names]
+ stable=bool((seed_values[list(M)] >= e1[list(M)].to_numpy()).all().all())
+ stable_text="成立" if stable else "不成立"
+ branch_rows=[]
+ for seed in cfg["seeds"]:
+  f=all11.loc[f"F_full_s{seed}_{b}"]; nl=all11.loc[f"A_no_local_s{seed}_{b}"]; nm=all11.loc[f"A_no_multiscale_s{seed}_{b}"]
+  branch_rows.append({"seed":seed,**{f"local_delta_{m}":f[m]-nl[m] for m in M},**{f"multiscale_delta_{m}":f[m]-nm[m] for m in M}})
+ branch_rows=pd.DataFrame(branch_rows)
+ dataset_tables=[]
+ for metric in M:
+  pivot=dataset[dataset.variant.isin(names)].pivot(index="dataset",columns="variant",values=metric).reset_index()
+  pivot=pivot[["dataset",*names]]; dataset_tables.append((metric,pivot))
+ old_monotonic=all(all11.loc[f"X_existing_{beta_code(x)}",m] <= all11.loc[f"X_existing_{beta_code(y)}",m] for m in M for x,y in zip(cfg["beta_values"][1:],cfg["beta_values"][:-1]))
+ full_monotonic=all(all11.loc[f"F_full_s{primary}_{beta_code(x)}",m] <= all11.loc[f"F_full_s{primary}_{beta_code(y)}",m] for m in M for x,y in zip(cfg["beta_values"][1:],cfg["beta_values"][:-1]))
  commit=subprocess.check_output(["git","rev-parse","--short","HEAD"],cwd=Path(__file__).resolve().parents[2],text=True).strip()
  report=f"""# 冻结 APRA + 独立 TREM：OrionBench 最终报告
 
@@ -61,6 +77,20 @@ Full 减去 no-local 为 `{delta(full,local)}`；Full 减去 no-multiscale 为 `
 
 {table(focus)}
 
+## 完整逐数据集结果
+
+### Aff-F1
+
+{table(dataset_tables[0][1])}
+
+### VUS-PR
+
+{table(dataset_tables[1][1])}
+
+### VUS-ROC
+
+{table(dataset_tables[2][1])}
+
 ## 事件恢复与误报
 
 {table(event_main)}
@@ -77,11 +107,11 @@ Full 相对 APRA-only 恢复 `{int(recovery.recovered_E1_misses)}` 个原漏检�
 
 ## 最终回答
 
-1. **TREM 是否产生独立异常证据：** 主模型的独立校准证据平均绝对幅度为 `{new.calibrated_abs:.4f}`，各阶段梯度和输入替换效应均非零；它已不再被 APRA 剩余容量压至近零。其检测价值由主模型相对 APRA-only 的变化 `{delta(full,e1)}` 判断。
-2. **是否补充 APRA 漏检：** Full 恢复 `{int(recovery.recovered_E1_misses)}` 个 APRA 漏检并丢失 `{int(recovery.lost_E1_hits)}` 个原命中；这给出互补性和代价的直接计数。
-3. **两个时序分支是否都有贡献：** 主种子 Full 对 no-local 为 `{delta(full,local)}`，对 no-multiscale 为 `{delta(full,multi)}`；三种子汇总用于判断该差异是否稳定。
-4. **APRA+TREM 是否稳定优于 APRA-only：** 三种子均值和每项标准差如上；只有三项指标在各种子均不低于 E1 时才判定稳定优于。
-5. **是否只是放大评分：** ordinary-numeric-only、无可靠性融合、分支消融及旧检查点直接重标度均采用同一校准和 beta。Full 必须超过这些对照，才能把增益归因于 APRA 残差时序建模；单纯随 beta 增大而变化不作为机制证据。
+1. **TREM 是否真正产生独立异常证据：产生了非零、可改变评分的独立输出，但没有产生有用的真实异常证据。** 主模型的校准证据平均绝对幅度为 `{new.calibrated_abs:.4f}`，各阶段梯度和输入替换效应均非零；然而主配置相对 APRA-only 为 `{delta(full,e1)}`，三项均明显下降。
+2. **TREM 能否补充 APRA 漏检：有局部互补，但净结果为负。** Full 恢复 `{int(recovery.recovered_E1_misses)}` 个 APRA 漏检，同时丢失 `{int(recovery.lost_E1_hits)}` 个原命中，并增加 `{int(event_main.set_index('variant').loc[f'F_full_s{primary}_{b}','delta_fp_vs_E1'])}` 个误报区间。新增证据不能可靠区分补充异常与正常变化。
+3. **两个时序分支是否都有实际贡献：否。** Full 对 no-local 的主种子变化为 `{delta(full,local)}`，Local 只在三个种子的 Aff-F1 上保持正贡献，两个 VUS 指标符号不稳定。Full 对 no-multiscale 为 `{delta(full,multi)}`，Multi-scale 在三个种子的 Aff-F1 和 VUS-ROC 均未显示正贡献。分支差异详见三种子表。
+4. **APRA+TREM 是否稳定优于 APRA-only：{stable_text}。** 三个 Full 种子的 All-11 三项指标均低于 APRA-only；均值为 `{seed_full.aff_f1_mean:.6f}/{seed_full.vus_pr_mean:.6f}/{seed_full.vus_roc_mean:.6f}`。
+5. **增益是否来自有效时序建模而非单纯放大：没有观察到增益，也没有支持有效时序建模。** ordinary-numeric-only 在主种子三项指标均高于 Full；既有和新 TREM 的 beta 从 0 增大时，三项指标均单调下降（既有={old_monotonic}，新模型={full_monotonic}）。结果说明解除压缩后放大了方向不可靠的证据，而非释放出被掩盖的时序收益。
 
 ## 产物
 
