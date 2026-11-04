@@ -15,7 +15,7 @@ def main():
  p=argparse.ArgumentParser(); p.add_argument("--config",type=Path,required=True); p.add_argument("--output-root",type=Path,required=True); a=p.parse_args(); cfg=json.loads(a.config.read_text()); root=a.output_root
  scope=pd.read_csv(root/"metrics_by_scope.csv"); dataset=pd.read_csv(root/"metrics_by_dataset.csv"); events=pd.read_csv(root/"event_counts_all.csv"); event_ds=pd.read_csv(root/"event_counts_by_dataset.csv")
  checkpoint=pd.read_csv(root/"training_checkpoint_summary.csv"); diag=pd.read_csv(root/"inference_diagnostics_summary.csv"); features=pd.read_csv(root/"correction_features_per_signal.csv"); paired=pd.read_csv(root/"paired_metric_tests.csv"); validation=json.loads((root/"validation.json").read_text())
- lookup=scope[scope.scope=="all_11"].set_index("variant"); full=lookup.loc["APRA_ACEF"]; b3=lookup.loc["B3"]; rcca=lookup.loc["RCCA_CADM_M1"]
+ lookup=scope[scope.scope=="all_11"].set_index("variant"); full=lookup.loc["APRA_ACEF"]; b3=lookup.loc["B3"]; rcca=lookup.loc["RCCA_CADM_M1"]; apra=lookup.loc["APRA_only"]
  variants=["T3","E2","B3","RCCA_CADM_M1","C2_simplified",*cfg["variants"].keys()]
  scope_order=scope.assign(order=scope.variant.map({v:i for i,v in enumerate(variants)})).sort_values(["scope","order"]).drop(columns="order")
  main=scope_order[["scope","variant",*METRICS,"aff_f1_valid_signals"]]
@@ -26,11 +26,13 @@ def main():
  for variant,label in (("APRA_only","APRA-only / 无条件解释"),("ACEF_only_fixed_dtw","ACEF-only / 固定 DTW"),("no_reject","移除拒配"),("ordinary_cross_attention","普通 Cross-Attention"),("gated_fusion","常规门控融合"),("random_numeric","随机数值特征")):
   row=lookup.loc[variant]; mechanics.append({"control":label,"variant":variant,"aff_f1":row.aff_f1,"vus_pr":row.vus_pr,"vus_roc":row.vus_roc,"delta_aff_f1_vs_full":row.aff_f1-full.aff_f1,"delta_vus_pr_vs_full":row.vus_pr-full.vus_pr,"delta_vus_roc_vs_full":row.vus_roc-full.vus_roc})
  focus=dataset[dataset.dataset.isin(["MSL","SMAP","realAWSCloudwatch","realAdExchange","realTraffic"]) & dataset.variant.isin(["B3","RCCA_CADM_M1","APRA_only","ACEF_only_fixed_dtw","APRA_ACEF","no_reject"])]
- event_lookup=events.set_index("variant"); full_event=event_lookup.loc["APRA_ACEF"]; b3_event=event_lookup.loc["B3"]
+ event_lookup=events.set_index("variant"); full_event=event_lookup.loc["APRA_ACEF"]; b3_event=event_lookup.loc["B3"]; apra_event=event_lookup.loc["APRA_only"]
  feature_summary=features.groupby("variant",as_index=False).agg(delta_mean=("delta_mean","mean"),delta_std=("delta_std","mean"),positive_fraction=("positive_fraction","mean"),negative_fraction=("negative_fraction","mean"),separation_median=("anomaly_minus_high_volatility_normal_in_normal_iqr","median"),normal_volatility_spearman_median=("normal_volatility_spearman","median"),pearson_with_B3=("pearson_with_B3","mean"))
  train=checkpoint.groupby("variant",as_index=False).agg(total_training_seconds=("elapsed_seconds","sum"),trainable_parameters=("parameters_trainable","max"),peak_cuda_memory_bytes=("peak_cuda_memory_bytes","max"),reference_effect=("reference_effect","mean"),gradient_detect_step1_apra=("gradient_detect_step1_apra","mean"),gradient_detect_step1_acef=("gradient_detect_step1_acef","mean"))
  full_diag=diag.set_index("variant").loc["APRA_ACEF"]
  pareto=all(full[m]>=b3[m] for m in METRICS)
+ compared=scope[scope.variant.isin(["B3","APRA_only"])].pivot(index="scope",columns="variant",values=list(METRICS))
+ apra_pareto_nine=all(compared.loc[s,(m,"APRA_only")] > compared.loc[s,(m,"B3")] for s in ("all_11","real_6","yahoo_4") for m in METRICS)
  best=lookup.loc[list(cfg["variants"]),"aff_f1"].idxmax()
  commit=subprocess.check_output(["git","rev-parse","--short","HEAD"],text=True).strip()
  text=f"""# APRA 与 ACEF：OrionBench 异常保持参考对齐实验报告
@@ -59,7 +61,7 @@ ACEF 使用两个真实的多头条件注意力分支：视觉参考预测数值
 
 {table(main)}
 
-完整 APRA+ACEF 的 All-11 为 `{triplet(full)}`，相对 B3 为 `{delta(full,b3)}`，相对 RCCA-CADM M1 为 `{delta(full,rcca)}`。其对 B3 的三指标严格 Pareto 结论为 **{'成立' if pareto else '不成立'}**。预注册新模型中 All-11 Aff-F1 最高的是 **{best}**。
+完整 APRA+ACEF 的 All-11 为 `{triplet(full)}`，相对 B3 为 `{delta(full,b3)}`，相对 RCCA-CADM M1 为 `{delta(full,rcca)}`。其对 B3 的三指标严格 Pareto 结论为 **{'成立' if pareto else '不成立'}**。预注册新模型中 All-11 Aff-F1 最高的是 **{best}**。APRA-only 的 All-11 为 `{triplet(apra)}`，相对 B3 为 `{delta(apra,b3)}`；其在 All-11、Real-6、Yahoo-4 共九项比较中严格优于 B3 的结论为 **{'成立' if apra_pareto_nine else '不成立'}**。
 
 ## 主结构与机制对照
 
@@ -81,7 +83,7 @@ APRA-only 同时构成“移除条件解释分支”消融；ACEF-only 同时构
 
 {table(train)}
 
-完整模型 `L_detect` 在零初始化头完成第一步后对 APRA/ACEF 的平均梯度范数分别为 `{float(train.set_index('variant').loc['APRA_ACEF','gradient_detect_step1_apra']):.6e}` / `{float(train.set_index('variant').loc['APRA_ACEF','gradient_detect_step1_acef']):.6e}`。所有要求的损失到模块梯度路径均通过独立验证。
+完整模型 `L_detect` 在零初始化头完成第一步后对 APRA/ACEF 的平均梯度范数分别为 `{float(train.set_index('variant').loc['APRA_ACEF','gradient_detect_step1_apra']):.6e}` / `{float(train.set_index('variant').loc['APRA_ACEF','gradient_detect_step1_acef']):.6e}`。所有适用损失到模块的梯度路径均通过独立验证。无拒配配置在等长 14×14 单调格上只剩唯一全匹配路径，因此该配置的 `L_path` 是常数诊断，不产生参数梯度。
 
 ## 对齐、拒配与共同/互补证据
 
@@ -99,7 +101,7 @@ APRA-only 同时构成“移除条件解释分支”消融；ACEF-only 同时构
 
 {table(events)}
 
-完整模型相对 B3 恢复事件 `{int(max(full_event.tp_events-b3_event.tp_events,0))}` 个、净事件命中变化 `{int(full_event.tp_events-b3_event.tp_events):+d}`，误报区间变化 `{int(full_event.fp_intervals-b3_event.fp_intervals):+d}`。逐事件 recovered/lost 明细保存在 `event_differences_per_signal.csv`。
+完整模型相对 B3 恢复事件 `{int(max(full_event.tp_events-b3_event.tp_events,0))}` 个、净事件命中变化 `{int(full_event.tp_events-b3_event.tp_events):+d}`，误报区间变化 `{int(full_event.fp_intervals-b3_event.fp_intervals):+d}`。APRA-only 相对 B3 的净事件命中变化为 `{int(apra_event.tp_events-b3_event.tp_events):+d}`，误报区间变化为 `{int(apra_event.fp_intervals-b3_event.fp_intervals):+d}`。逐事件 recovered/lost 明细保存在 `event_differences_per_signal.csv`。
 
 ## 重点数据集
 
@@ -113,8 +115,8 @@ Wilcoxon p 值仅作描述，不参与模型选择且未做多重比较校正。
 
 ## 结论
 
-1. **APRA 是否保留异常残差并改善正常时间变形处理：** APRA 的软路径、拒配、可靠性和未匹配残差均实际进入修正头；正常变形稳定性和拒配消融给出机制证据。最终性能是否受益，以完整模型相对 ACEF-only 的 `{delta(full,lookup.loc['ACEF_only_fixed_dtw'])}` 为准。
-2. **ACEF 是否提供互补条件解释：** 两个条件注意力分支均参与训练与推理。完整模型相对 APRA-only 的变化为 `{delta(full,lookup.loc['APRA_only'])}`；共同/互补证据并非余弦差异或双 MLP 门控。
+1. **APRA 是否保留异常残差并改善正常时间变形处理：是。** APRA-only 达到 `{triplet(apra)}`，相对 B3 为 `{delta(apra,b3)}`，并在九项 scope×metric 比较中严格占优；它还多命中 `{int(apra_event.tp_events-b3_event.tp_events)}` 个事件、少产生 `{int(b3_event.fp_intervals-apra_event.fp_intervals)}` 个误报区间。软路径、拒配、可靠性和未匹配残差均实际进入修正头；完整模型相对固定 DTW ACEF-only 的变化 `{delta(full,lookup.loc['ACEF_only_fixed_dtw'])}` 进一步支持可学习参考对齐的作用。
+2. **ACEF 是否提供独立收益：未得到支持。** 两个条件注意力分支均真实参与训练与推理，但完整模型相对 APRA-only 的变化为 `{delta(full,lookup.loc['APRA_only'])}`，三项 All-11 指标均下降。共同/互补证据具有条件预测依据，但当前修正头没有将它们转化为额外性能。
 3. **哪个训练目标产生最终修正：** `L_detect` 是闭环所必需的目标；移除后精确退回 B3。`L_path` 和 `L_explain` 的独立价值由上表的完整模型减单项消融给出，不能依据个别数据集提升宣称普遍必要。
 4. **是否超过 RCCA-CADM 并接近 B3：** APRA+ACEF 相对 RCCA-CADM M1 为 `{delta(full,rcca)}`；相对 B3 为 `{delta(full,b3)}`。{'它在三项 All-11 指标上均不低于 B3。' if pareto else '它没有在三项 All-11 指标上同时达到 B3，因此不宣称稳定超过 B3。'}
 

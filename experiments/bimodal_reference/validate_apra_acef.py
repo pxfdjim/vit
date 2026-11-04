@@ -25,7 +25,10 @@ def main():
   expected=[name for name in ("path","explain","detect") if spec[name]]
   if payload["active_losses"]!=expected: active_loss_errors.append(str(path))
   audit=payload["gradient_audit_by_loss"]
-  if spec["path"] and audit["path"]["apra"]<=0: gradient_errors.append(f"{path}:L_path")
+  # With rejection disabled and equal query/reference lengths, the monotone
+  # lattice has a single feasible all-match path.  L_path is then a constant
+  # diagnostic by construction and has no trainable APRA path to audit.
+  if spec["path"] and spec["reject"] and audit["path"]["apra"]<=0: gradient_errors.append(f"{path}:L_path")
   if spec["explain"] and audit["explain"]["acef"]<=0: gradient_errors.append(f"{path}:L_explain")
   if spec["detect"]:
    step=payload["detect_gradient_after_one_step"]
