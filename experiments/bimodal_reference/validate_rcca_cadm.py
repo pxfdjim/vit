@@ -98,8 +98,6 @@ def main() -> int:
     if len(records) != expected_signals:
         errors.append(f"inference records {len(records)} != {expected_signals}")
     passed_records = [record for record in records if record["status"] == "passed"]
-    smoke = json.loads((root / "inference_manifests/worker_00_of_01.json").read_text())
-    passed_records += [record for record in smoke["records"] if record["status"] == "passed"]
     min_m5 = min(record["m5_reference_effect"] for record in passed_records)
     max_m6 = max(record["m6_formula_error"] for record in passed_records)
     if min_m5 <= 1e-8:

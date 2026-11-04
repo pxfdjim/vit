@@ -66,7 +66,7 @@ def model_evidence(model: RCCACADM, windows: torch.Tensor, patch: torch.Tensor,
         numeric.append(model.numeric(windows[start:start + batch_size]))
         visual.append(model.visual(patch[start:start + batch_size]))
     numeric = torch.cat(numeric); visual = torch.cat(visual)
-    used_ids = reference_ids.roll(1) if shuffle_reference else reference_ids
+    used_ids = reference_ids
     logits, conditional = [], []
     attention_entropy, attention_diagonal = [], []
     for start in range(0, len(windows), batch_size):
@@ -76,6 +76,12 @@ def model_evidence(model: RCCACADM, windows: torch.Tensor, patch: torch.Tensor,
         nr_full, vr_full = numeric[ids], visual[ids]
         nr = nr_full.gather(1, columns.expand(-1, -1, nr_full.shape[-1]))
         vr = vr_full.gather(1, columns.expand(-1, -1, vr_full.shape[-1]))
+        if shuffle_reference:
+            # Shuffle the aligned reference Tokens themselves. Rolling only the
+            # reference IDs is a no-op when T3 selects one common reference for
+            # every query in a short signal.
+            nr = nr.roll(1, dims=0).flip(1)
+            vr = vr.roll(1, dims=0).flip(1)
         output = model.forward_tokens(numeric[start:stop], visual[start:stop], nr, vr)
         logits.append(output["logits"]); conditional.append(output["conditional_difference"])
         for weights in output["attention"].values():
@@ -99,6 +105,7 @@ def main() -> int:
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--datasets", nargs="+")
+    parser.add_argument("--signals", nargs="+")
     parser.add_argument("--skip-complete", action="store_true")
     args = parser.parse_args()
     config = json.loads(args.config.read_text()); variants = output_variants(config)
@@ -111,6 +118,11 @@ def main() -> int:
     if unknown:
         raise ValueError(f"unknown datasets: {unknown}")
     tasks = [(dataset, signal) for dataset in datasets for signal in signal_names(data_root, dataset)]
+    if args.signals:
+        tasks = [(dataset, signal) for dataset, signal in tasks if signal in set(args.signals)]
+        missing = sorted(set(args.signals) - {signal for _, signal in tasks})
+        if missing:
+            raise ValueError(f"unknown signals for selected datasets: {missing}")
     tasks = tasks[args.worker_index::args.num_workers]
     records, diagnostic_rows, failures = [], [], 0
     current_dataset = None; models = {}; payloads = {}
