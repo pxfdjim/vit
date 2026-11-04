@@ -9,6 +9,7 @@ import random
 import sys
 import tempfile
 import time
+from collections import Counter
 
 import numpy as np
 import torch
@@ -98,6 +99,25 @@ def visual_window(raw: np.ndarray, stats: dict) -> np.ndarray:
     return np.clip((residual - lo) / (hi - lo), 0.0, 1.0)
 
 
+def retain_reference_eligible_windows(base: dict):
+    """Drop training signals for which overlap exclusion leaves no legal reference."""
+    records = json.loads(base["records_json"])
+    counts = Counter(record["signal"] for record in records)
+    # With four-window overlap exclusion, every query has a legal same-signal
+    # reference only when there are at least eight ordered windows.
+    retained = torch.tensor([counts[record["signal"]] >= 8 for record in records])
+    excluded = {signal: count for signal, count in counts.items() if count < 8}
+    if not retained.any():
+        raise RuntimeError("no windows retain a legal non-overlapping T3 reference")
+    filtered_records = [record for record, keep in zip(records, retained.tolist()) if keep]
+    filtered = dict(base)
+    filtered["raw"] = base["raw"][retained]
+    filtered["visual"] = base["visual"][retained]
+    filtered["records_json"] = json.dumps(filtered_records, separators=(",", ":"))
+    filtered["signals"] = len({record["signal"] for record in filtered_records})
+    return filtered, excluded
+
+
 def reference_paths(base: dict, device: torch.device):
     records = json.loads(base["records_json"])
     visual = _patch_tokens(base["visual"])
@@ -136,6 +156,7 @@ def main() -> int:
     base = torch.load(base_path, map_location="cpu", weights_only=False)
     if base["labels_read"] or not base["uses_all_windows"]:
         raise RuntimeError("base cache violates unlabeled protocol")
+    base, excluded_short_signals = retain_reference_eligible_windows(base)
     records = json.loads(base["records_json"])
     stats = json.loads(Path(config["normalization_stats"]).read_text())
     generator = torch.Generator().manual_seed(args.seed)
@@ -186,6 +207,8 @@ def main() -> int:
         "clip": "frozen_OpenAI_ViT-B-16_Block6",
         "elapsed_seconds": time.perf_counter() - started,
         "source_base_cache": str(base_path),
+        "excluded_short_signals": excluded_short_signals,
+        "excluded_short_windows": int(sum(excluded_short_signals.values())),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(".tmp")
