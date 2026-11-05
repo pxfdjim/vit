@@ -31,6 +31,22 @@ def main():
  checks["gradient_valid"]=gradients; checks["mechanism_audit_valid"]=mechanism
  if gradients!=len(paths): errors.append("gradient audit")
  if mechanism!=len(paths): errors.append("mechanism audit")
+ reuse_root=Path(cfg["loss_weight_run"])/"checkpoints"; reuse_valid=0
+ for seed in cfg["seeds"]:
+  for dataset in cfg["datasets"]:
+   full=torch.load(reuse_root/"E0_full"/f"seed_{seed}"/f"{dataset}.pt",map_location="cpu",weights_only=True)
+   detect=torch.load(reuse_root/"E1_no_path"/f"seed_{seed}"/f"{dataset}.pt",map_location="cpu",weights_only=True)
+   same=(full["initialization_sha256"]==detect["initialization_sha256"] and
+         full["optimizer_updates"]==detect["optimizer_updates"] and
+         full["synthetic_cache_seed"]==detect["synthetic_cache_seed"] and
+         full["model_config"]==detect["model_config"] and
+         full["numeric_initialization"]==detect["numeric_initialization"] and
+         full["visual_initialization"]==detect["visual_initialization"] and
+         len(full["history"])==len(detect["history"])==cfg["training"]["epochs"] and
+         detect["active_losses"]==["detect"] and not detect["labels_used"])
+   reuse_valid+=int(same)
+ checks["E6_reuse_integrity"]=reuse_valid
+ if reuse_valid!=len(cfg["seeds"])*len(cfg["datasets"]): errors.append("E6 reuse integrity")
  metrics=pd.read_csv(a.output_root/"metrics_per_signal.csv"); expected_rows=492*len(variants)
  scores=sum(1 for _ in (a.output_root/"point_scores").glob("*/*/*.npz")); checks.update(metric_rows=len(metrics),point_scores=scores)
  if len(metrics)!=expected_rows or scores!=expected_rows: errors.append("score/metric count")

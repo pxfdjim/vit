@@ -93,6 +93,11 @@ def combine(a,cfg,variants):
   for name,value in p.get("mechanism_audit",{}).items(): row[f"mechanism_{name}"]=value
   checkpoints.append(row)
  manifests=[json.loads(x.read_text()) for x in sorted((a.output_root/"inference_manifests").glob("*.json"))]; new_diag=pd.DataFrame([x for m in manifests for x in m["diagnostics"]])
+ # E6 scores and three-seed path diagnostics are immutable reuse from the
+ # loss-ablation run.  The current inference pass loads only E6's primary
+ # checkpoint to export pointwise mechanism features, so exclude that one-row
+ # diagnostic stream here to avoid double-counting the primary seed.
+ new_diag=new_diag[new_diag.variant.ne("E6_detect_only")]
  old_diag=pd.read_csv(Path(cfg["selective_run"])/"path_diagnostics_per_signal.csv")
  old_diag=old_diag[old_diag.variant.isin(EXISTING[:-1])]
  loss_diag=pd.read_csv(Path(cfg["loss_weight_run"])/"path_diagnostics_per_signal.csv")
@@ -109,13 +114,15 @@ def combine(a,cfg,variants):
    values=frame.value.to_numpy(float); volatility=np.abs(np.diff(values,prepend=values[0])); normal=~labels
    cutoff=np.quantile(volatility[normal],cfg["normal_high_volatility_quantile"]) if normal.any() else np.inf
    high=normal&(volatility>=cutoff); ordinary=normal&~high
-   with np.load(a.output_root/"feature_diagnostics"/d/s/"evidence.npz") as z, np.load(Path(cfg["selective_run"])/"feature_diagnostics"/d/s/"evidence.npz") as old_z, np.load(Path(cfg["loss_weight_run"])/"feature_diagnostics"/d/s/"evidence.npz") as loss_z:
+   with np.load(a.output_root/"feature_diagnostics"/d/s/"evidence.npz") as z, np.load(Path(cfg["selective_run"])/"feature_diagnostics"/d/s/"evidence.npz") as old_z:
     for variant in grouped_variants(cfg):
-     source=loss_z if variant=="E6_detect_only" else (old_z if variant in EXISTING else z)
+     # E6's original run stored only its final delta.  The current pass
+     # reconstructs its Match/Reject/reliability/residual outputs from the
+     # exact reused checkpoint without changing the immutable E6 point score.
+     source=old_z if variant in EXISTING[:-1] else z
      row={"dataset":d,"signal":s,"variant":variant,"anomaly_points":int(labels.sum()),"high_volatility_normal_points":int(high.sum())}
      for feature in ("rejection","match_probability","reliability","structural_residual","delta"):
-      source_variant="E1_no_path" if variant=="E6_detect_only" else variant
-      x=source[f"point_{feature}__{source_variant}"]
+      x=source[f"point_{feature}__{variant}"]
       for region,mask in (("anomaly",labels),("high_volatility_normal",high),("ordinary_normal",ordinary)):
        row[f"{feature}_{region}_mean"]=float(np.mean(x[mask])) if mask.any() else np.nan
      state_rows.append(row)

@@ -17,11 +17,14 @@ from src.models.numeric_temporal_matching import match_paths
 from src.models.vfg_paired_vit4ts import _patch_tokens,select_common_visual_windows
 
 def model_ids(cfg): return [f"{v}_s{s}" for v,spec in cfg["variants"].items() if spec.get("train",True) for s in cfg["seeds"]]
+def inference_ids(cfg): return [f"E6_detect_only_s{cfg['primary_seed']}",*model_ids(cfg)]
 def existing_ids(cfg):
  return [f"E1_existing_s{s}" for s in cfg["seeds"]]+[f"{v}_s{s}" for v in ("E2_select","E3_no_reject","E4_no_warp","E5_fixed_dtw","E6_detect_only") for s in cfg["seeds"]]
 def output_variants(cfg): return ["B3"]+existing_ids(cfg)+model_ids(cfg)
 def checkpoint(cfg,root,variant,seed,dataset):
  seed=int(seed)
+ if variant=="E6_detect_only":
+  return Path(cfg["loss_weight_run"])/"checkpoints/E1_no_path"/f"seed_{seed}"/f"{dataset}.pt"
  return root/"checkpoints"/variant/f"seed_{seed}"/f"{dataset}.pt"
 def load_model(path,device):
  p=torch.load(path,map_location="cpu",weights_only=True); m=APRAACEF(**p["model_config"]).to(device); m.load_state_dict(p["state_dict"],strict=True); m.eval()
@@ -67,10 +70,12 @@ def main():
     if not np.array_equal(reused_ts,ts): raise RuntimeError(f"timestamp mismatch: {mid}")
     scores[mid]=reused
    if current!=dataset:
-    models={mid:load_model(checkpoint(cfg,a.output_root,*mid.rsplit("_s",1),dataset),device) for mid in model_ids(cfg)}; current=dataset
+    models={mid:load_model(checkpoint(cfg,a.output_root,*mid.rsplit("_s",1),dataset),device) for mid in inference_ids(cfg)}; current=dataset
    stored={}
    for mid,(model,payload) in models.items():
-    mt=time.perf_counter(); token,diag=evidence(model,windows,patch,ids,cols); point,scale=signed_calibration(token["delta"],b3,len(raw),device); scores[mid]=b3+float(cfg["loss_weights"]["gamma"])*point; variant,seed=mid.rsplit("_s",1); stored[f"point_delta__{mid}"]=point
+    mt=time.perf_counter(); token,diag=evidence(model,windows,patch,ids,cols); point,scale=signed_calibration(token["delta"],b3,len(raw),device); variant,seed=mid.rsplit("_s",1)
+    if variant!="E6_detect_only": scores[mid]=b3+float(cfg["loss_weights"]["gamma"])*point
+    stored[f"point_delta__{mid}"]=point
     if int(seed)==cfg["primary_seed"]:
      for name,value in token.items(): stored[f"point_{name}__{variant}"]=restore(value,len(raw),device)
     diag.update({"dataset":dataset,"signal":signal,"model_id":mid,"variant":variant,"seed":int(seed),"calibration_scale":scale,"inference_seconds":time.perf_counter()-mt}); diagnostics.append(diag)
