@@ -15,7 +15,10 @@ from experiments.bimodal_reference.run_apra_mechanism_inference import output_va
 from src.models.model_utils import compute_detection_intervals
 M=("aff_f1","vus_pr","vus_roc")
 EXISTING=("E1_existing","E2_select","E3_no_reject","E4_no_warp","E5_fixed_dtw","E6_detect_only")
-def grouped_variants(cfg): return [*EXISTING,*cfg["variants"]]
+def grouped_variants(cfg):
+ # E6 is both an immutable reused score and a declared mechanism variant.
+ # Preserve its first occurrence while preventing duplicate aggregate rows.
+ return list(dict.fromkeys([*EXISTING,*cfg["variants"]]))
 def hits(events,intervals): return np.asarray([any(l<=e and r>=s for l,r in intervals) for s,e in events],bool)
 def fps(events,intervals): return sum(not any(s<=ee and e>=es for es,ee in events) for s,e in intervals)
 def aggregate(metrics,cfg,variants):
@@ -97,12 +100,27 @@ def combine(a,cfg,variants):
  # loss-ablation run.  The current inference pass loads only E6's primary
  # checkpoint to export pointwise mechanism features, so exclude that one-row
  # diagnostic stream here to avoid double-counting the primary seed.
+ current_e6=new_diag[new_diag.variant.eq("E6_detect_only")].copy()
  new_diag=new_diag[new_diag.variant.ne("E6_detect_only")]
  old_diag=pd.read_csv(Path(cfg["selective_run"])/"path_diagnostics_per_signal.csv")
  old_diag=old_diag[old_diag.variant.isin(EXISTING[:-1])]
  loss_diag=pd.read_csv(Path(cfg["loss_weight_run"])/"path_diagnostics_per_signal.csv")
  loss_diag=loss_diag[loss_diag.variant.eq("E1_no_path")].copy()
  loss_diag["variant"]="E6_detect_only"; loss_diag["model_id"]=loss_diag.model_id.str.replace("E1_no_path","E6_detect_only",regex=False)
+ # Equal query/reference lengths and fixed endpoints imply equal Reject and
+ # Skip marginals.  Fill the fields absent from the older diagnostic schema;
+ # the primary seed's structural residual is reconstructed from the exact
+ # reused checkpoint by the current inference pass.
+ loss_diag["match_probability"]=1.0-loss_diag["rejection"]
+ loss_diag["reference_skip"]=loss_diag["rejection"]
+ if not current_e6.empty:
+  current=current_e6.set_index(["dataset","signal"])
+  primary=loss_diag.seed.eq(cfg["primary_seed"])
+  keys=list(zip(loss_diag.loc[primary,"dataset"],loss_diag.loc[primary,"signal"]))
+  loss_diag.loc[primary,"structural_residual"]=[current.loc[key,"structural_residual"] for key in keys]
+  # Use the current pass's timing for the primary seed so the report compares
+  # E6 with E7--E10 under the same process and instrumentation.
+  loss_diag.loc[primary,"inference_seconds"]=[current.loc[key,"inference_seconds"] for key in keys]
  old_diag=pd.concat((old_diag,loss_diag),ignore_index=True)
  diag=pd.concat((old_diag,new_diag),ignore_index=True); diag_summary=diag.groupby(["model_id","variant","seed"],as_index=False).mean(numeric_only=True)
  # Labels are opened only here, after immutable point scores exist, to describe

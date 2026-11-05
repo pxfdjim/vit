@@ -43,6 +43,23 @@ def main():
   x=multids[multids.variant.isin(GROUPS)].copy(); x["value"]=x.apply(lambda z:f"{z[f'{metric}_mean']:.6f}±{z[f'{metric}_std']:.6f}",axis=1); per_dataset.append(x.pivot(index="dataset",columns="variant",values="value").reset_index())
  training=train.groupby(["variant","seed"],as_index=False).agg(checkpoints=("dataset","count"),training_seconds=("elapsed_seconds","sum"),parameters_all=("parameters_all","max"),parameters_trainable=("parameters_trainable","max"),first_detect=("first_epoch_detect","mean"),final_detect=("final_epoch_detect","mean"),gradient_detect_initial_apra=("gradient_detect_apra","mean"),gradient_detect_after_step_apra=("gradient_detect_after_step_apra","mean"),gradient_detect_after_step_head=("gradient_detect_after_step_acef","mean"))
  grad_cos=cosine.groupby(["group","left","right"],as_index=False).cosine.agg(["mean","median","std"]).reset_index()
+ event_mean=event_summary.set_index("group")
+ e1_vs_b3={m:allm.loc["E1_existing",f"{m}_mean"]-b3[m] for m in M}
+ e1_vs_e6={m:allm.loc["E1_existing",f"{m}_mean"]-allm.loc["E6_detect_only",f"{m}_mean"] for m in M}
+ e2_vs_e6={m:allm.loc["E2_select",f"{m}_mean"]-allm.loc["E6_detect_only",f"{m}_mean"] for m in M}
+ e6_vs_e7={m:allm.loc["E6_detect_only",f"{m}_mean"]-allm.loc["E7_no_query_reject",f"{m}_mean"] for m in M}
+ e6_vs_e8={m:allm.loc["E6_detect_only",f"{m}_mean"]-allm.loc["E8_no_reference_skip",f"{m}_mean"] for m in M}
+ e6_vs_e9={m:allm.loc["E6_detect_only",f"{m}_mean"]-allm.loc["E9_no_structural_residual",f"{m}_mean"] for m in M}
+ e1_vs_e5={m:allm.loc["E1_existing",f"{m}_mean"]-allm.loc["E5_fixed_dtw",f"{m}_mean"] for m in M}
+ mechanism_rows=pd.DataFrame([
+  {"mechanism":"L_path","decision":"保留为弱结构正则","evidence":f"E1−E6={e1_vs_e6['aff_f1']:+.6f}/{e1_vs_e6['vus_pr']:+.6f}/{e1_vs_e6['vus_roc']:+.6f}；增加事件命中并减少误报，但牺牲连续排序"},
+  {"mechanism":"L_select","decision":"不保留","evidence":f"E2−E6={e2_vs_e6['aff_f1']:+.6f}/{e2_vs_e6['vus_pr']:+.6f}/{e2_vs_e6['vus_roc']:+.6f}，拒配区分改善未转化为稳定检测增益"},
+  {"mechanism":"L_detect","decision":"保留","evidence":"单独驱动 E6 对对齐器/残差/评分头均产生全覆盖梯度，并取得最高 All-11 VUS 均值"},
+  {"mechanism":"Query Reject","decision":"与 Reference Skip 成对保留","evidence":f"禁用 Reject 后 E6−E7={e6_vs_e7['aff_f1']:+.6f}/{e6_vs_e7['vus_pr']:+.6f}/{e6_vs_e7['vus_roc']:+.6f}"},
+  {"mechanism":"Reference Skip","decision":"与 Query Reject 成对保留","evidence":f"禁用 Skip 后 E6−E8={e6_vs_e8['aff_f1']:+.6f}/{e6_vs_e8['vus_pr']:+.6f}/{e6_vs_e8['vus_roc']:+.6f}"},
+  {"mechanism":"结构残差输入","decision":"保留","evidence":f"E6−E9={e6_vs_e9['aff_f1']:+.6f}/{e6_vs_e9['vus_pr']:+.6f}/{e6_vs_e9['vus_roc']:+.6f}；移除后拒配在高波动正常区反而更高"},
+  {"mechanism":"可微单调软对齐","decision":"保留","evidence":f"E1−固定 DTW E5={e1_vs_e5['aff_f1']:+.6f}/{e1_vs_e5['vus_pr']:+.6f}/{e1_vs_e5['vus_roc']:+.6f}"},
+ ])
  commit=subprocess.check_output(["git","rev-parse","--short","HEAD"],cwd=Path(__file__).resolve().parents[2],text=True).strip()
  report=f"""# APRA 损失与内部机制消融：OrionBench 最终报告
 
@@ -133,7 +150,16 @@ Wilcoxon p 值仅作描述，未用于选择模型且未做多重比较校正。
 
 ## 最终机制筛选
 
-<!-- CONCLUSIONS -->
+{table(mechanism_rows)}
+
+1. **未发现 `L_detect` 梯度链路实现错误。** 同 Checkpoint、Batch 和参数集合下，`L_detect` 对对齐器的平均梯度范数为 `0.108927`、参数与元素覆盖率均为 `1.0`；`L_select` 为 `0.237337`，两者实际均值比约 `2.18`，不是此前单步记录的 `99,267` 倍。旧极端比值来自零初始化评分头的首步瞬态。首步更新评分头后，检测梯度能到达对齐器。`L_path` 与 `L_detect` 的对齐器梯度余弦均值为 `-0.136752`，说明主要问题是目标方向冲突。
+2. **`L_detect` 可以独立训练完整 APRA。** E6 的 All-11 为 `{trip(allm.loc['E6_detect_only'], '_mean')}`，相对 B3 为 `{allm.loc['E6_detect_only','aff_f1_mean']-b3.aff_f1:+.6f}/{allm.loc['E6_detect_only','vus_pr_mean']-b3.vus_pr:+.6f}/{allm.loc['E6_detect_only','vus_roc_mean']-b3.vus_roc:+.6f}`。它牺牲很小的 Aff-F1，换来最高的 All-11 VUS-PR/VUS-ROC 均值；因此独立路径监督不是可训练性的必要条件。
+3. **`L_path` 有结构与事件价值，但不是普适检测增益。** E1 相对 E6 为 `{e1_vs_e6['aff_f1']:+.6f}/{e1_vs_e6['vus_pr']:+.6f}/{e1_vs_e6['vus_roc']:+.6f}`；平均命中事件由 `{event_mean.loc['E6_detect_only','tp_events_mean']:.3f}` 增至 `{event_mean.loc['E1_existing','tp_events_mean']:.3f}`，误报区间由 `{event_mean.loc['E6_detect_only','fp_intervals_mean']:.3f}` 降至 `{event_mean.loc['E1_existing','fp_intervals_mean']:.3f}`。最终保留其现有固定权重作为弱结构正则，不能把它表述为所有排序指标的必要损失。
+4. **`L_select` 提高异常/高波动正常的拒配差异，但没有解决目标冲突。** E2 的拒配均值为异常 `{state.set_index('variant').loc['E2_select','rejection_anomaly_mean']:.6f}`、高波动正常 `{state.set_index('variant').loc['E2_select','rejection_high_volatility_normal_mean']:.6f}`；然而 E2 相对 E6 为 `{e2_vs_e6['aff_f1']:+.6f}/{e2_vs_e6['vus_pr']:+.6f}/{e2_vs_e6['vus_roc']:+.6f}`。本轮不保留 `L_select`。
+5. **Reject 与 Skip 作为成对间隙机制保留，当前实验不能分别归因。** 等长 14×14 Token 与固定双端点要求 Reject 数等于 Skip 数；删除任一状态都会令另一状态不可达。E7/E8 因而都退化为 Match-only 路径，并相对 E6 在三项 All-11 均值上下降。两组有两个种子逐点完全一致；主种子仅 MSL 因独立 CUDA 训练轨迹产生差异，不改变耦合结论。
+6. **结构残差提供主要的连续排序增益。** E9 虽比 E6 高 `{allm.loc['E9_no_structural_residual','aff_f1_mean']-allm.loc['E6_detect_only','aff_f1_mean']:+.6f}` Aff-F1，但 VUS-PR/VUS-ROC 低 `{allm.loc['E6_detect_only','vus_pr_mean']-allm.loc['E9_no_structural_residual','vus_pr_mean']:+.6f}/{allm.loc['E6_detect_only','vus_roc_mean']-allm.loc['E9_no_structural_residual','vus_roc_mean']:+.6f}`。E9 的拒配在真实异常为 `{state.set_index('variant').loc['E9_no_structural_residual','rejection_anomaly_mean']:.6f}`，在高波动正常为 `{state.set_index('variant').loc['E9_no_structural_residual','rejection_high_volatility_normal_mean']:.6f}`，方向反转，说明只有状态概率而没有结构残差不足以把拒配转成可靠异常证据。
+7. **可微软对齐需要保留。** 固定 DTW 的 E5 三项均值低于 E1 `{e1_vs_e5['aff_f1']:+.6f}/{e1_vs_e5['vus_pr']:+.6f}/{e1_vs_e5['vus_roc']:+.6f}`；E10 最简 Match-only 为 `{trip(allm.loc['E10_match_only'], '_mean')}`，几乎等于 B3，说明收益来自可学习间隙路径与结构残差的闭环，而不是额外参数量。E7--E10 参数量均为 `2,059,973`，结构差异未通过容量变化制造。
+8. **最终模型保留 E1 原始 APRA。** 三种子 All-11 为 `{trip(allm.loc['E1_existing'], '_mean')}`，相对 B3 为 `{e1_vs_b3['aff_f1']:+.6f}/{e1_vs_b3['vus_pr']:+.6f}/{e1_vs_b3['vus_roc']:+.6f}`，三项均为正；同时平均多命中 `{event_mean.loc['E1_existing','tp_events_mean']-901:+.3f}` 个事件并少 `{228-event_mean.loc['E1_existing','fp_intervals_mean']:+.3f}` 个误报区间。E6 可作为偏连续排序的简化训练方案，但不是三指标同时不低于 B3 的最终替代。
 
 ## 产物
 

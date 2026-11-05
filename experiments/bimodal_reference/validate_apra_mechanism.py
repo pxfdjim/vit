@@ -31,22 +31,34 @@ def main():
  checks["gradient_valid"]=gradients; checks["mechanism_audit_valid"]=mechanism
  if gradients!=len(paths): errors.append("gradient audit")
  if mechanism!=len(paths): errors.append("mechanism audit")
- reuse_root=Path(cfg["loss_weight_run"])/"checkpoints"; reuse_valid=0
+ reuse_root=Path(cfg["loss_weight_run"])/"checkpoints"; reuse_valid=0; paired_full_valid=0
  for seed in cfg["seeds"]:
   for dataset in cfg["datasets"]:
-   full=torch.load(reuse_root/"E0_full"/f"seed_{seed}"/f"{dataset}.pt",map_location="cpu",weights_only=True)
    detect=torch.load(reuse_root/"E1_no_path"/f"seed_{seed}"/f"{dataset}.pt",map_location="cpu",weights_only=True)
-   same=(full["initialization_sha256"]==detect["initialization_sha256"] and
-         full["optimizer_updates"]==detect["optimizer_updates"] and
-         full["synthetic_cache_seed"]==detect["synthetic_cache_seed"] and
-         full["model_config"]==detect["model_config"] and
-         full["numeric_initialization"]==detect["numeric_initialization"] and
-         full["visual_initialization"]==detect["visual_initialization"] and
-         len(full["history"])==len(detect["history"])==cfg["training"]["epochs"] and
+   same=(detect["variant"]=="E1_no_path" and detect["seed"]==seed and
+         detect["dataset"]==dataset and detect["synthetic_cache_seed"]==cfg["primary_seed"] and
+         len(detect["history"])==cfg["training"]["epochs"] and
          detect["active_losses"]==["detect"] and not detect["labels_used"])
+   # The prior loss-ablation run reused the original APRA checkpoint as seed
+   # 20261104 and trained paired E0 checkpoints only for the two additional
+   # seeds.  Compare initialization identity wherever the paired artifact
+   # exists; validate the primary seed through its immutable score below.
+   full_path=reuse_root/"E0_full"/f"seed_{seed}"/f"{dataset}.pt"
+   if full_path.exists():
+    full=torch.load(full_path,map_location="cpu",weights_only=True)
+    paired=(full["initialization_sha256"]==detect["initialization_sha256"] and
+            full["optimizer_updates"]==detect["optimizer_updates"] and
+            full["synthetic_cache_seed"]==detect["synthetic_cache_seed"] and
+            full["model_config"]==detect["model_config"] and
+            full["numeric_initialization"]==detect["numeric_initialization"] and
+            full["visual_initialization"]==detect["visual_initialization"] and
+            len(full["history"])==len(detect["history"])==cfg["training"]["epochs"])
+    paired_full_valid+=int(paired)
+    same=bool(same and paired)
    reuse_valid+=int(same)
- checks["E6_reuse_integrity"]=reuse_valid
+ checks["E6_reuse_integrity"]=reuse_valid; checks["E6_paired_full_initialization_checks"]=paired_full_valid
  if reuse_valid!=len(cfg["seeds"])*len(cfg["datasets"]): errors.append("E6 reuse integrity")
+ if paired_full_valid!=2*len(cfg["datasets"]): errors.append("E6 paired full initialization integrity")
  metrics=pd.read_csv(a.output_root/"metrics_per_signal.csv"); expected_rows=492*len(variants)
  scores=sum(1 for _ in (a.output_root/"point_scores").glob("*/*/*.npz")); checks.update(metric_rows=len(metrics),point_scores=scores)
  if len(metrics)!=expected_rows or scores!=expected_rows: errors.append("score/metric count")
