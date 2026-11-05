@@ -133,6 +133,7 @@ Wilcoxon p 值仅作描述，未用于选择模型或权重，也未做多重比
 - `checkpoints/`、`training_logs/`、`training_manifest.json`
 - `point_scores/`、`feature_diagnostics/`、`inference_manifests/`
 - `metrics_per_signal.csv`、`metrics_by_dataset.csv`、`metrics_by_scope.csv`
+- `multiseed_summary.csv`、`multiseed_by_dataset.csv`
 - `event_counts_*.csv`、`event_differences_per_signal.csv`
 - `path_diagnostics_*.csv`、`training_checkpoint_summary.csv`、`paired_metric_tests.csv`
 - `figures/loss_ablation.png`、`figures/gamma_sensitivity.png`、`validation.json`

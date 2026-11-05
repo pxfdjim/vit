@@ -15,7 +15,8 @@ def main():
  axes[0].legend(frameon=False); fig.tight_layout(); fig.savefig(out/"gamma_sensitivity.png",dpi=180); plt.close(fig)
  fig,axes=plt.subplots(1,3,figsize=(13.5,3.8)); labels={"E0_full":"E0 Full","E1_no_path":"E1 No path","E2_path_only":"E2 Path only"}; x=np.arange(3)
  for ax,m,title in zip(axes,M,TITLES):
-  g=seeds[seeds.scope=="all_11"].set_index("variant").loc[list(labels)]; ax.bar(x,g[f"{m}_mean"],yerr=g[f"{m}_std"],capsize=4,color=["#2f6b9a","#d7862f","#709c54"]); ax.set_xticks(x,list(labels.values()),rotation=15); ax.set(title=f"All-11 {title}",ylabel=title); ax.grid(axis="y",alpha=.25)
+  g=seeds[seeds.scope=="all_11"].set_index("variant").loc[list(labels)]; mean=g[f"{m}_mean"].to_numpy(); std=g[f"{m}_std"].to_numpy()
+  ax.errorbar(x,mean,yerr=std,marker="o",lw=1.8,capsize=5,color="#2f6b9a"); span=max(float((mean+std).max()-(mean-std).min()),1e-4); ax.set_ylim(float((mean-std).min()-0.35*span),float((mean+std).max()+0.35*span)); ax.set_xticks(x,list(labels.values()),rotation=15); ax.set(title=f"All-11 {title}",ylabel=title); ax.grid(axis="y",alpha=.25)
  fig.tight_layout(); fig.savefig(out/"loss_ablation.png",dpi=180); plt.close(fig)
  print(out)
 if __name__=="__main__": main()
