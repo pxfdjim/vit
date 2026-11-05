@@ -73,14 +73,22 @@ def combine(a,cfg,variants):
    names=[f"{v}_s{s}" for s in cfg["seeds"]]; vals=lookup.loc[names]; row={"scope":sc,"variant":v,"seeds":3}
    for m in M: row[f"{m}_mean"]=float(vals[m].mean()); row[f"{m}_std"]=float(vals[m].std(ddof=0))
    seedrows.append(row)
+ seed_ds_rows=[]
+ for dataset in cfg["datasets"]:
+  lookup=ds[ds.dataset==dataset].set_index("variant")
+  for v in cfg["variants"]:
+   names=[f"{v}_s{s}" for s in cfg["seeds"]]; vals=lookup.loc[names]; row={"dataset":dataset,"variant":v,"seeds":3}
+   for m in M: row[f"{m}_mean"]=float(vals[m].mean()); row[f"{m}_std"]=float(vals[m].std(ddof=0))
+   seed_ds_rows.append(row)
  checkpoints=[]
  for path in sorted((a.output_root/"checkpoints").glob("*/seed_*/*.pt")):
   p=torch.load(path,map_location="cpu",weights_only=True); row={"variant":p["variant"],"seed":p["seed"],"dataset":p["dataset"],"elapsed_seconds":p["elapsed_seconds"],"optimizer_updates":p["optimizer_updates"],"initialization_sha256":p["initialization_sha256"],"active_losses":"|".join(p["active_losses"]),"reference_effect":p["reference_effect"],"parameters_all":p["parameter_counts"]["all"],"parameters_trainable":p["parameter_counts"]["trainable"]}
   for loss,norms in p["gradient_audit_by_loss"].items():
    for group,value in norms.items(): row[f"gradient_{loss}_{group}"]=value
+  for group,value in p["detect_gradient_after_one_step"].items(): row[f"gradient_detect_after_step_{group}"]=value
   checkpoints.append(row)
  manifests=[json.loads(x.read_text()) for x in sorted((a.output_root/"inference_manifests").glob("*.json"))]; diag=pd.DataFrame([x for m in manifests for x in m["diagnostics"]]); diag_summary=diag.groupby(["model_id","variant","seed"],as_index=False).mean(numeric_only=True)
- outputs={"metrics_per_signal.csv":metrics,"metrics_by_dataset.csv":ds,"metrics_by_scope.csv":scope,"event_counts_per_signal.csv":events,"event_counts_by_dataset.csv":event_ds,"event_counts_all.csv":event_all,"event_differences_per_signal.csv":pd.DataFrame(differences),"alignment_audit.csv":alignment,"paired_metric_tests.csv":pd.DataFrame(paired),"multiseed_summary.csv":pd.DataFrame(seedrows),"training_checkpoint_summary.csv":pd.DataFrame(checkpoints),"path_diagnostics_per_signal.csv":diag,"path_diagnostics_summary.csv":diag_summary}
+ outputs={"metrics_per_signal.csv":metrics,"metrics_by_dataset.csv":ds,"metrics_by_scope.csv":scope,"event_counts_per_signal.csv":events,"event_counts_by_dataset.csv":event_ds,"event_counts_all.csv":event_all,"event_differences_per_signal.csv":pd.DataFrame(differences),"alignment_audit.csv":alignment,"paired_metric_tests.csv":pd.DataFrame(paired),"multiseed_summary.csv":pd.DataFrame(seedrows),"multiseed_by_dataset.csv":pd.DataFrame(seed_ds_rows),"training_checkpoint_summary.csv":pd.DataFrame(checkpoints),"path_diagnostics_per_signal.csv":diag,"path_diagnostics_summary.csv":diag_summary}
  for name,frame in outputs.items(): frame.to_csv(a.output_root/name,index=False)
  print(scope.to_string(index=False))
 def main():

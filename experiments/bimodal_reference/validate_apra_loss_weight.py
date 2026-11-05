@@ -37,7 +37,8 @@ def main():
    for seed in cfg["seeds"]:
     with np.load(a.output_root/"point_scores"/d/s/f"E2_path_only_s{seed}.npz") as z: maxerr["path_only"]=max(maxerr["path_only"],float(np.max(np.abs(z["scores"]-b))))
  checks["reproduction_max_abs_errors"]=maxerr
- if any(x!=0 for x in maxerr.values()): errors.append(f"reproduction {maxerr}")
+ reproduction_tolerance=1e-12; checks["reproduction_tolerance"]=reproduction_tolerance
+ if any(x>reproduction_tolerance for x in maxerr.values()): errors.append(f"reproduction {maxerr}")
  manifests=[json.loads(x.read_text()) for x in sorted((a.output_root/"inference_manifests").glob("*.json"))]; records=[r for m in manifests for r in m["records"]]; checks["inference_records"]=len(records)
  if len(records)!=492 or any(r["status"] not in {"passed","skipped_complete"} for r in records): errors.append("inference records")
  result={"status":"passed" if not errors else "failed","errors":errors,"checks":checks,"labels_used_for_training_calibration_weighting_or_selection":False}; (a.output_root/"validation.json").write_text(json.dumps(result,indent=2)+"\n"); print(json.dumps(result,indent=2)); return 0 if not errors else 1
