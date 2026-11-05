@@ -25,11 +25,11 @@
     "normal_warp_modes": ["smooth_shift", "local_stretch", "smooth_deformation"]
   },
   "variants": {
-    "E6_detect_only": {"reject": true, "skip": true, "structural_residual": true},
-    "E7_no_query_reject": {"reject": false, "skip": true, "structural_residual": true},
-    "E8_no_reference_skip": {"reject": true, "skip": false, "structural_residual": true},
-    "E9_no_structural_residual": {"reject": true, "skip": true, "structural_residual": false},
-    "E10_match_only": {"reject": false, "skip": false, "structural_residual": false}
+    "E6_detect_only": {"reject": true, "skip": true, "structural_residual": true, "train": false, "reuse_variant": "E1_no_path"},
+    "E7_no_query_reject": {"reject": false, "skip": true, "structural_residual": true, "train": true},
+    "E8_no_reference_skip": {"reject": true, "skip": false, "structural_residual": true, "train": true},
+    "E9_no_structural_residual": {"reject": true, "skip": true, "structural_residual": false, "train": true},
+    "E10_match_only": {"reject": false, "skip": false, "structural_residual": false, "train": true}
   },
   "macro_scopes": {
     "all_11": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch", "YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"],

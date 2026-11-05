@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 
 from src.models.apra_acef import (
     APRAACEF, LossWeights, detection_loss, gradient_norms,
-    load_numeric_from_full, selective_time_warp,
+    load_numeric_from_full, reversible_warp,
 )
 
 
@@ -83,13 +83,6 @@ def main() -> int:
     structural_rows = torch.tensor([row["kind"] in reject_kinds for row in perturbations],
                                    device=device, dtype=torch.bool)
     structural_reject = altered & structural_rows[:, None]
-    warp_generator = torch.Generator(device=device).manual_seed(seed + 17041)
-    warp_modes = torch.arange(len(raw), device=device) % 3
-    warp_amplitudes = (.35 + .65 * torch.rand(len(raw), generator=warp_generator, device=device))
-    warp_signs = torch.where(torch.rand(len(raw), generator=warp_generator, device=device) < .5,
-                             -torch.ones_like(warp_amplitudes), torch.ones_like(warp_amplitudes))
-    warp_amplitudes = warp_amplitudes * warp_signs
-    warp_centers = .3 + .4 * torch.rand(len(raw), generator=warp_generator, device=device)
     initial_hash=hashlib.sha256()
     for name,value in model.state_dict().items():
         initial_hash.update(name.encode()); initial_hash.update(value.detach().cpu().numpy().tobytes())
@@ -106,8 +99,7 @@ def main() -> int:
         vq=visual[indices].float(); vs=synthetic_visual[indices].float()
         vr_full=visual[ids].float(); vr=vr_full.gather(1,columns.expand(-1,-1,vr_full.shape[-1]))
         clean=model.forward_tokens(nq,vq,nr,vr); synthetic=model.forward_tokens(ns,vs,nr,vr)
-        warped_n,target,_=selective_time_warp(
-            nq, warp_modes[indices], warp_amplitudes[indices], warp_centers[indices])
+        warped_n,target=reversible_warp(nq)
         warped_v=target@vq
         warped=model.forward_tokens(warped_n,warped_v,nr,vr)
         clean_base=base_proxy(nq,vq,nr,vr); synthetic_base=base_proxy(ns,vs,nr,vr)

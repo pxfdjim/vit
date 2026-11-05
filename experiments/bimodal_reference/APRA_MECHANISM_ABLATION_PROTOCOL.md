@@ -6,7 +6,10 @@ This protocol is fixed before E6--E10 full training or evaluation.
 
 - E0/B3 and E1--E5 scores are reused byte-for-byte from the validated selective
   APRA run. Source/config/seed hashes are checked before aggregation.
-- E6--E10 use the same Full-AMR numeric and visual initialization, unlabeled
+- E6 is the previously completed `E1_no_path` loss-ablation result because its
+  source, initialization hashes, cache, optimizer, epochs and seeds exactly match
+  E1 and its only objective is `L_detect`. E7--E10 use the same Full-AMR numeric
+  and visual initialization, unlabeled
   synthetic cache, T3 reference IDs/columns, 16 epochs, optimizer, batch order,
   three seeds, fixed final epoch and `gamma=0.05` as E2--E5.
 - All new variants use only `L_detect`. No evaluation label, validation split,
@@ -14,8 +17,8 @@ This protocol is fixed before E6--E10 full training or evaluation.
 
 ## New variants
 
-- E6 Detection-only: full Match/Query-Reject/Reference-Skip APRA and full APRA
-  residual head.
+- E6 Detection-only: zero-error reuse of the validated full
+  Match/Query-Reject/Reference-Skip APRA trained with `L_detect` alone.
 - E7 No Query Reject: Query-Reject log potential is disabled; Match and
   Reference Skip code remains.
 - E8 No Reference Skip: Reference-Skip log potential is disabled; Match and

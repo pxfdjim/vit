@@ -13,7 +13,7 @@ from experiments.bimodal_reference.run_apra_mechanism_inference import output_va
 def main():
  p=argparse.ArgumentParser(); p.add_argument("--config",type=Path,required=True); p.add_argument("--output-root",type=Path,required=True); a=p.parse_args()
  cfg=json.loads(a.config.read_text()); variants=output_variants(cfg); errors=[]; checks={}
- paths=sorted((a.output_root/"checkpoints").glob("*/seed_*/*.pt")); expected=5*3*11; checks["checkpoints"]=len(paths)
+ paths=sorted((a.output_root/"checkpoints").glob("*/seed_*/*.pt")); expected=4*3*11; checks["checkpoints"]=len(paths)
  if len(paths)!=expected: errors.append(f"checkpoints {len(paths)} != {expected}")
  hashes={}; gradients=0; mechanism=0
  for path in paths:
@@ -36,7 +36,7 @@ def main():
  if len(metrics)!=expected_rows or scores!=expected_rows: errors.append("score/metric count")
  valid=metrics[metrics.excluded_reason.fillna("")==""].groupby("variant").size().to_dict(); checks["valid_signals_per_variant"]=valid
  if any(valid.get(v)!=488 for v in variants): errors.append("valid signal set")
- maxerr={"B3":0.,"E1_primary":0.,"reused_E2_E5":0.}; feature=Path(cfg["feature_scoring_run"]); apra=Path(cfg["apra_run"])
+ maxerr={"B3":0.,"E1_primary":0.,"reused_E2_E5":0.,"reused_E6":0.}; feature=Path(cfg["feature_scoring_run"]); apra=Path(cfg["apra_run"])
  for d in DATASETS:
   for s in signal_names(Path(cfg["data_root"]),d):
    with np.load(feature/"point_scores"/d/s/"B3_raw_numeric_l010.npz") as z: b=z["scores"]
@@ -47,6 +47,9 @@ def main():
     for seed in cfg["seeds"]:
      with np.load(Path(cfg["selective_run"])/"point_scores"/d/s/f"{variant}_s{seed}.npz") as old, np.load(a.output_root/"point_scores"/d/s/f"{variant}_s{seed}.npz") as new:
       maxerr["reused_E2_E5"]=max(maxerr["reused_E2_E5"],float(np.max(np.abs(old["scores"]-new["scores"]))))
+   for seed in cfg["seeds"]:
+    with np.load(Path(cfg["loss_weight_run"])/"point_scores"/d/s/f"E1_no_path_s{seed}.npz") as old, np.load(a.output_root/"point_scores"/d/s/f"E6_detect_only_s{seed}.npz") as new:
+     maxerr["reused_E6"]=max(maxerr["reused_E6"],float(np.max(np.abs(old["scores"]-new["scores"]))))
  checks["reproduction_max_abs_errors"]=maxerr
  if any(x>1e-12 for x in maxerr.values()): errors.append(f"reproduction {maxerr}")
  state=pd.read_csv(a.output_root/"real_state_separation_per_signal.csv"); checks["state_rows"]=len(state)

@@ -16,9 +16,9 @@ from src.models.fixed_reference_numeric_evidence import positive_median
 from src.models.numeric_temporal_matching import match_paths
 from src.models.vfg_paired_vit4ts import _patch_tokens,select_common_visual_windows
 
-def model_ids(cfg): return [f"{v}_s{s}" for v in cfg["variants"] for s in cfg["seeds"]]
+def model_ids(cfg): return [f"{v}_s{s}" for v,spec in cfg["variants"].items() if spec.get("train",True) for s in cfg["seeds"]]
 def existing_ids(cfg):
- return [f"E1_existing_s{s}" for s in cfg["seeds"]]+[f"{v}_s{s}" for v in ("E2_select","E3_no_reject","E4_no_warp","E5_fixed_dtw") for s in cfg["seeds"]]
+ return [f"E1_existing_s{s}" for s in cfg["seeds"]]+[f"{v}_s{s}" for v in ("E2_select","E3_no_reject","E4_no_warp","E5_fixed_dtw","E6_detect_only") for s in cfg["seeds"]]
 def output_variants(cfg): return ["B3"]+existing_ids(cfg)+model_ids(cfg)
 def checkpoint(cfg,root,variant,seed,dataset):
  seed=int(seed)
@@ -61,7 +61,9 @@ def main():
    if not np.array_equal(bts,ts): raise RuntimeError("timestamp mismatch")
    scores={"B3":b3}
    for mid in existing_ids(cfg):
-    reused,reused_ts=read_score(Path(cfg["selective_run"])/"point_scores"/dataset/signal/f"{mid}.npz")
+    source_mid=mid.replace("E6_detect_only_","E1_no_path_")
+    source_root=Path(cfg["loss_weight_run"]) if mid.startswith("E6_detect_only_") else Path(cfg["selective_run"])
+    reused,reused_ts=read_score(source_root/"point_scores"/dataset/signal/f"{source_mid}.npz")
     if not np.array_equal(reused_ts,ts): raise RuntimeError(f"timestamp mismatch: {mid}")
     scores[mid]=reused
    if current!=dataset:

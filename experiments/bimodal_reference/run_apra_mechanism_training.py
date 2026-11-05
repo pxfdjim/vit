@@ -11,7 +11,8 @@ def main():
     p.add_argument("--output-root",type=Path,required=True); p.add_argument("--gpus",type=int,nargs="+",required=True)
     p.add_argument("--datasets",nargs="+"); p.add_argument("--python",default=sys.executable); a=p.parse_args()
     cfg=json.loads(a.config.read_text()); datasets=a.datasets or cfg["datasets"]
-    jobs=[(v,s,d) for v in cfg["variants"] for s in cfg["seeds"] for d in datasets]
+    jobs=[(v,s,d) for v,spec in cfg["variants"].items() if spec.get("train",True)
+          for s in cfg["seeds"] for d in datasets]
     cache=Path(cfg["rcca_training_cache"])
     jobs.sort(key=lambda x:(cache/f"{x[2]}.pt").stat().st_size,reverse=True)
     active={}; records=[]; started=time.time()
