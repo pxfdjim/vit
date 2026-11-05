@@ -15,18 +15,27 @@ def main():
  means=multi[multi.variant.isin(["E1_existing",*cfg["variants"]])]
  allm=means[means.scope.eq("all_11")].set_index("variant"); e1=allm.loc["E1_existing"]; e2=allm.loc["E2_select"]
  delta=dtrip(e2,e1,"_mean"); all_positive=all(e2[f"{m}_mean"]>e1[f"{m}_mean"] for m in M)
+ b3=scope[(scope.scope.eq("all_11"))&(scope.variant.eq("B3"))].iloc[0]
+ delta_b3="/".join(f"{e2[f'{m}_mean']-b3[m]:+.6f}" for m in M)
  seed_scope=scope[scope.scope.eq("all_11")].set_index("variant"); seed_wins=[]
  for seed in cfg["seeds"]:
   left=seed_scope.loc[f"E2_select_s{seed}"]; right=seed_scope.loc[f"E1_existing_s{seed}"]; seed_wins.append(all(left[m]>right[m] for m in M))
  mech=train.groupby("variant",as_index=False).mean(numeric_only=True).set_index("variant"); m2=mech.loc["E2_select"]; m3=mech.loc["E3_no_reject"]; m4=mech.loc["E4_no_warp"]; m5=mech.loc["E5_fixed_dtw"]
  reject_sep=m2.mechanism_synthetic_structural_rejection-m2.mechanism_synthetic_matchable_rejection
  normal_sep=m2.mechanism_synthetic_structural_rejection-m2.mechanism_synthetic_unchanged_rejection
+ reject_removal=m3.mechanism_synthetic_structural_rejection-m2.mechanism_synthetic_structural_rejection
+ warp_removal=m4.mechanism_warp_target_match_mass-m2.mechanism_warp_target_match_mass
  path=diag[diag.seed.eq(primary)].set_index("variant"); p1=path.loc["E1_existing"]; p2=path.loc["E2_select"]
  real=state.set_index("variant"); s2=real.loc["E2_select"]
  real_reject_gap=s2.rejection_anomaly_mean-s2.rejection_high_volatility_normal_mean
+ real_reject_gap_e1=real.loc["E1_existing"].rejection_anomaly_mean-real.loc["E1_existing"].rejection_high_volatility_normal_mean
  ev=events[events.variant.isin(base_variants)].copy(); evbase=ev.set_index("variant").loc[f"E1_existing_s{primary}"]; eve2=ev.set_index("variant").loc[f"E2_select_s{primary}"]; ev["delta_tp_vs_E1"]=ev.tp_events-evbase.tp_events; ev["delta_fp_vs_E1"]=ev.fp_intervals-evbase.fp_intervals
  focus=eventds[(eventds.dataset.isin(["MSL","SMAP","realAWSCloudwatch","realAdExchange","realTraffic"]))&(eventds.variant.isin(base_variants))].copy()
+ event_multi=(events[events.variant.ne("B3")].assign(variant=lambda x:x.variant.str.replace(r"_s\d+$","",regex=True)).groupby("variant",as_index=False).agg(seeds=("variant","size"),tp_events_mean=("tp_events","mean"),tp_events_std=("tp_events","std"),fp_intervals_mean=("fp_intervals","mean"),fp_intervals_std=("fp_intervals","std")))
  train_table=train.groupby(["variant","seed"],as_index=False).agg(checkpoints=("dataset","count"),training_seconds=("elapsed_seconds","sum"),parameters=("parameters_all","max"),trainable_parameters=("parameters_trainable","max"),first_select=("first_epoch_select","mean"),final_select=("final_epoch_select","mean"),first_detect=("first_epoch_detect","mean"),final_detect=("final_epoch_detect","mean"),gradient_select_apra=("gradient_select_apra","mean"),gradient_detect_after_step_apra=("gradient_detect_after_step_apra","mean"),gradient_detect_after_step_acef=("gradient_detect_after_step_acef","mean"))
+ grad_select=float(train.loc[train.variant.eq("E2_select"),"gradient_select_apra"].mean()); grad_detect=float(train.loc[train.variant.eq("E2_select"),"gradient_detect_after_step_apra"].mean()); grad_ratio=grad_select/max(grad_detect,1e-12)
+ e3=allm.loc["E3_no_reject"]; e4=allm.loc["E4_no_warp"]; e5=allm.loc["E5_fixed_dtw"]
+ delta_e3=dtrip(e2,e3,"_mean"); delta_e4=dtrip(e2,e4,"_mean"); delta_e5=dtrip(e2,e5,"_mean")
  mechanism_cols=["variant","mechanism_clean_path_entropy","mechanism_clean_match_probability","mechanism_clean_rejection","mechanism_synthetic_structural_rejection","mechanism_synthetic_matchable_rejection","mechanism_synthetic_unchanged_rejection","mechanism_warp_target_match_mass","mechanism_clean_displacement","mechanism_clean_structural_residual"]
  mechanism=mech.reset_index()[mechanism_cols]
  state_cols=["variant","rejection_anomaly_mean","rejection_high_volatility_normal_mean","match_probability_anomaly_mean","match_probability_high_volatility_normal_mean","structural_residual_anomaly_mean","structural_residual_high_volatility_normal_mean","delta_anomaly_mean","delta_high_volatility_normal_mean"]
@@ -64,13 +73,15 @@ def main():
 
 E2 相对 E1 的 All-11 三种子均值变化为 `{delta}`。三项均值全部提高：**{'是' if all_positive else '否'}**；逐种子三项同时提高为 `{sum(seed_wins)}/3`。
 
+E2 相对固定 B3 的 All-11 均值变化为 `{delta_b3}`。其均值三项均高于 B3，但 Aff-F1 仅 `2/3` 个种子高于 B3，因此不能据此宣称逐种子稳定胜出。
+
 ![三随机种子主指标](figures/selective_metrics.png)
 
 ## L_select 的路径行为
 
 {table(mechanism)}
 
-E2 在合成结构异常区的平均拒配概率比可匹配幅值/趋势扰动高 `{reject_sep:+.6f}`，比未扰动区域高 `{normal_sep:+.6f}`。移除拒配监督后的对应结构异常拒配变化为 `{m2.mechanism_synthetic_structural_rejection-m3.mechanism_synthetic_structural_rejection:+.6f}`；移除正常扭曲监督后的已知目标匹配质量变化为 `{m2.mechanism_warp_target_match_mass-m4.mechanism_warp_target_match_mass:+.6f}`。
+E2 在合成结构异常区的平均拒配概率比可匹配幅值/趋势扰动高 `{reject_sep:+.6f}`，比未扰动区域高 `{normal_sep:+.6f}`。移除拒配监督后，结构异常拒配概率变化为 `{reject_removal:+.6f}`，说明该监督真实控制 Reject。移除正常扭曲监督后，已知目标匹配质量变化为 `{warp_removal:+.6f}`；该数值没有支持正常扭曲监督的独立机制收益。
 
 ![选择性路径行为](figures/selective_path_behavior.png)
 
@@ -80,13 +91,17 @@ E2 在合成结构异常区的平均拒配概率比可匹配幅值/趋势扰动�
 
 {table(real_table)}
 
-E2 的真实异常拒配概率减最高波动 10% 正常点为 `{real_reject_gap:+.6f}`。该分析只在所有分数冻结后打开标签，用于解释结果，不参与训练、校准、权重或模型选择。
+E2 的真实异常拒配概率减最高波动 10% 正常点为 `{real_reject_gap:+.6f}`，E1 为 `{real_reject_gap_e1:+.6f}`。该分析只在所有分数冻结后打开标签，用于解释结果，不参与训练、校准、权重或模型选择。
 
 ## 事件恢复与误报
 
 {table(ev)}
 
 主种子 E2 相对 E1 的事件净变化为 `{int(eve2.tp_events-evbase.tp_events):+d}`，误报区间变化为 `{int(eve2.fp_intervals-evbase.fp_intervals):+d}`。
+
+### 三随机种子事件统计
+
+{table(event_multi)}
 
 ### 重点数据集
 
@@ -114,6 +129,8 @@ E2 相对 E1 退化的数据集：Aff-F1 为 `{', '.join(regressions['aff_f1']) 
 
 E2/E3/E4 结构和参数量完全相同，差异只来自预注册监督项；E5 删除可学习对齐器。`L_select` 和 `L_detect` 对 APRA 对齐参数及评分头的梯度记录在上表，首末 Epoch 损失用于检查两目标是否失衡。
 
+E2 的初始审计 batch 中，`L_select` 对 APRA 对齐器的平均梯度范数为 `{grad_select:.3e}`，一次更新后 `L_detect` 对同一模块为 `{grad_detect:.3e}`，前者约为后者的 `{grad_ratio:.1f}` 倍；`L_detect` 对评分头的梯度非零。按损失值平衡权重并未带来对齐器梯度尺度平衡。
+
 ## 逐信号配对差异
 
 Wilcoxon p 值只作描述，未做多重比较校正，也未用于选择模型。
@@ -122,11 +139,11 @@ Wilcoxon p 值只作描述，未做多重比较校正，也未用于选择模型
 
 ## 最终结论
 
-1. **L_select 是否改善正常匹配与异常拒配区分：** {'支持' if reject_sep>0 and normal_sep>0 else '不支持'}。合成结构异常相对可匹配扰动/未扰动区域的拒配差为 `{reject_sep:+.6f}/{normal_sep:+.6f}`，正常扭曲目标质量及消融见机制表。
+1. **L_select 是否改善正常匹配与异常拒配区分：部分支持。** E2 相对 E1 降低推理路径熵和普通拒配，并将合成结构异常与可匹配/未扰动区域的拒配拉开 `{reject_sep:+.6f}/{normal_sep:+.6f}`；真实异常相对高波动正常的拒配差也从 `{real_reject_gap_e1:+.6f}` 增至 `{real_reject_gap:+.6f}`。但移除正常扭曲监督后目标匹配质量反而变化 `{warp_removal:+.6f}`，所以不能把正常匹配改善单独归因于该子目标。
 2. **选择性对齐是否提高检测性能：** E2 相对 E1 的 All-11 三种子变化为 `{delta}`，因此**{'三项宏平均均提高' if all_positive else '没有形成三项一致提高'}**。事件与数据集权衡如上。
-3. **收益是否来自软对齐和拒配而非容量：** E2/E3/E4 参数完全相同，E5 固定路径提供结构对照。若 E2 对 E3/E4/E5 的差异成立，它来自监督和可学习路径；本实验没有为 E2 增加评分分支或证据权重。
-4. **是否改善 L_path 与 L_detect 不协调：** 首末损失与独立梯度均有记录。检测结论以 E2 对 E1 的三种子变化为准；{'结果支持改进' if all_positive else '结果仍不支持已完全解决该不协调'}。
-5. **能否作为 B3 的稳定核心模块：** {'E2 在 All-11 三项均值均优于 E1，且三个种子中三项同时胜出的数量见上，可作为候选稳定核心。' if all_positive else 'E2 未在 All-11 三项均值上同时超过既有 APRA，当前仍保留 E1 作为经验证核心。'}
+3. **收益是否来自软对齐和拒配而非容量：证据混合。** E2 相对固定 DTW 的变化为 `{delta_e5}`，三项均提高，支持可学习软对齐的价值。相同容量下，E2 相对无拒配监督为 `{delta_e3}`，相对无扭曲监督为 `{delta_e4}`，均存在指标符号变化，因此没有证明两个新增监督都带来稳定检测收益。
+4. **是否改善 L_path 与 L_detect 不协调：没有。** 两项损失均下降且评分头获得检测梯度，但初始审计中路径目标对 APRA 对齐器的梯度约为检测目标的 `{grad_ratio:.1f}` 倍；结合 E2 未一致超过 E1，优化不协调仍然存在。
+5. **能否作为 B3 的稳定核心模块：暂不替换 E1。** E2 的 All-11 三项均值均高于 B3，但只有 `2/3` 个种子在 Aff-F1 上高于 B3，且 E2 相对 E1 为 `{delta}`、平均事件命中也更低。当前保留 E1 作为经验证核心。
 
 ## 产物
 
