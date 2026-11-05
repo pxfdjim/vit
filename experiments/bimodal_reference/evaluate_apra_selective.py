@@ -83,6 +83,8 @@ def combine(a,cfg,variants):
  checkpoints=[]
  for path in sorted((a.output_root/"checkpoints").glob("*/seed_*/*.pt")):
   p=torch.load(path,map_location="cpu",weights_only=True); row={"variant":p["variant"],"seed":p["seed"],"dataset":p["dataset"],"elapsed_seconds":p["elapsed_seconds"],"optimizer_updates":p["optimizer_updates"],"initialization_sha256":p["initialization_sha256"],"active_losses":"|".join(p["active_losses"]),"reference_effect":p["reference_effect"],"parameters_all":p["parameter_counts"]["all"],"parameters_trainable":p["parameter_counts"]["trainable"]}
+  for name in ("total","select","detect"):
+   row[f"first_epoch_{name}"]=p["history"][0].get(name,0.0); row[f"final_epoch_{name}"]=p["history"][-1].get(name,0.0)
   for loss,norms in p["gradient_audit_by_loss"].items():
    for group,value in norms.items(): row[f"gradient_{loss}_{group}"]=value
   for group,value in p["detect_gradient_after_one_step"].items(): row[f"gradient_detect_after_step_{group}"]=value
