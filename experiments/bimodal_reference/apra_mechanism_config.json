@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "experiment_name": "apra_mechanism_ablation",
+  "preregistered_date": "2026-11-05",
+  "data_root": "/home/pengxf/jim/VLM4TS/data",
+  "selective_run": "/home/pengxf/jim/VLM4TS/.worktrees/apra-selective-alignment-3c96070/data/runs/apra_selective_20261105_ceb25be",
+  "loss_weight_run": "/home/pengxf/jim/VLM4TS/.worktrees/apra-loss-weight-8d465ca/data/runs/apra_loss_weight_20261104_1c52066",
+  "apra_run": "/home/pengxf/jim/VLM4TS/.worktrees/apra-acef-4757b9f/data/runs/apra_acef_20261104_09b0a32",
+  "apra_loss_weight_run": "/home/pengxf/jim/VLM4TS/.worktrees/apra-loss-weight-8d465ca/data/runs/apra_loss_weight_20261104_1c52066",
+  "rcca_config": "/home/pengxf/jim/VLM4TS/.worktrees/rcca-cadm-e6aad7d/experiments/bimodal_reference/rcca_cadm_config.json",
+  "rcca_training_cache": "/home/pengxf/jim/VLM4TS/.worktrees/rcca-cadm-e6aad7d/data/runs/rcca_cadm_20261104_e6aad7d/synthetic_training_cache/seed_20261104",
+  "rcca_run": "/home/pengxf/jim/VLM4TS/.worktrees/rcca-cadm-e6aad7d/data/runs/rcca_cadm_20261104_e6aad7d",
+  "full_checkpoint_root": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints",
+  "feature_scoring_run": "/home/pengxf/jim/VLM4TS/.worktrees/amr-feature-scoring-c6e2e39/data/runs/amr_feature_scoring_20261103_c41f246",
+  "normalization_stats": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/runs/amr_orionbench_native_20261103/normalization_stats.json",
+  "mindts_root": "/home/pengxf/jim/VLM4TS/.worktrees/unified-aff-vus-1e38ecf/.references/MindTS",
+  "datasets": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch", "YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"],
+  "primary_seed": 20261104,
+  "seeds": [20261104, 20261105, 20261106],
+  "training": {"epochs": 16, "batch_size": 32, "learning_rate": 0.0003, "weight_decay": 0.02, "gradient_clip": 1.0, "checkpoint_selection": "fixed_final_epoch"},
+  "loss_weights": {"path": 0.0, "explain": 0.0, "detect": 1.0, "detect_margin": 0.35, "gamma": 0.05},
+  "selective_supervision": {
+    "reject_perturbations": ["frequency_change", "volatility_burst", "morphology"],
+    "matchable_perturbations": ["amplitude_jump", "trend_shift"],
+    "normal_warp_modes": ["smooth_shift", "local_stretch", "smooth_deformation"]
+  },
+  "variants": {
+    "E6_detect_only": {"reject": true, "skip": true, "structural_residual": true},
+    "E7_no_query_reject": {"reject": false, "skip": true, "structural_residual": true},
+    "E8_no_reference_skip": {"reject": true, "skip": false, "structural_residual": true},
+    "E9_no_structural_residual": {"reject": true, "skip": true, "structural_residual": false},
+    "E10_match_only": {"reject": false, "skip": false, "structural_residual": false}
+  },
+  "macro_scopes": {
+    "all_11": ["realTraffic", "realTweets", "SMAP", "MSL", "artificialWithAnomaly", "realAdExchange", "realAWSCloudwatch", "YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"],
+    "real_6": ["realTraffic", "realTweets", "SMAP", "MSL", "realAdExchange", "realAWSCloudwatch"],
+    "yahoo_4": ["YAHOOA1", "YAHOOA2", "YAHOOA3", "YAHOOA4"]
+  },
+  "evaluation": {"affiliation_alpha": 0.01, "threshold_method": "mean", "smoothing": true, "sliding": false, "anomaly_padding": 0},
+  "normal_high_volatility_quantile": 0.90
+}

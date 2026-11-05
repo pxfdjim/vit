@@ -87,3 +87,35 @@ def test_controls_are_distinct_and_reference_changes_output():
         left=model.forward_tokens(nq,vq,nr,vr)["delta"]
         right=model.forward_tokens(nq,vq,nr.roll(1,0).flip(1),vr.roll(1,0).flip(1))["delta"]
     assert not torch.allclose(left,right)
+
+
+def test_state_ablation_preserves_exact_path_marginals():
+    torch.manual_seed(11)
+    tokens = [torch.randn(2, 14, 192) for _ in range(4)]
+    for reject, skip in ((True, True), (False, True), (True, False), (False, False)):
+        model = APRAACEF("apra", "apra_head", reject, skip=skip).eval()
+        alignment = model.forward_tokens(*tokens)["alignment"]
+        row_mass = alignment["soft_match"].sum(-1) + alignment["rejection"]
+        column_mass = alignment["soft_match"].sum(-2) + alignment["reference_skip"]
+        assert torch.allclose(row_mass, torch.ones_like(row_mass), atol=2e-5)
+        assert torch.allclose(column_mass, torch.ones_like(column_mass), atol=2e-5)
+        if not reject:
+            assert float(alignment["rejection"].abs().max()) < 1e-6
+        if not skip:
+            assert float(alignment["reference_skip"].abs().max()) < 1e-6
+
+
+def test_structural_residual_ablation_removes_only_head_inputs():
+    torch.manual_seed(13)
+    tokens = [torch.randn(2, 14, 192) for _ in range(4)]
+    full = APRAACEF("apra", "apra_head", True, structural_residual=True).eval()
+    ablated = APRAACEF("apra", "apra_head", True, structural_residual=False).eval()
+    ablated.load_state_dict(full.state_dict())
+    with torch.no_grad():
+        full.fusion.out.weight.fill_(1e-3)
+        ablated.fusion.out.weight.fill_(1e-3)
+        full_output = full.forward_tokens(*tokens)
+        ablated_output = ablated.forward_tokens(*tokens)
+    for key in full_output["alignment"]:
+        assert torch.equal(full_output["alignment"][key], ablated_output["alignment"][key])
+    assert not torch.equal(full_output["delta"], ablated_output["delta"])

@@ -73,10 +73,12 @@ def _monotone_marginals(match: torch.Tensor, reject: torch.Tensor,
 
 class AnomalyPreservingReferenceAlignment(nn.Module):
     """DTW-anchored monotone soft matching with an explicit query reject state."""
-    def __init__(self, hidden: int = HIDDEN, heads: int = 4, reject_enabled: bool = True):
+    def __init__(self, hidden: int = HIDDEN, heads: int = 4,
+                 reject_enabled: bool = True, skip_enabled: bool = True):
         super().__init__()
         del heads
         self.reject_enabled = reject_enabled
+        self.skip_enabled = skip_enabled
         self.query_projection = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.GELU(),
                                               nn.LayerNorm(hidden))
         self.reference_projection = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.GELU(),
@@ -108,6 +110,8 @@ class AnomalyPreservingReferenceAlignment(nn.Module):
         if not self.reject_enabled:
             reject_logits = torch.full_like(reject_logits, -1e4)
         skip_logits = self.skip_head(torch.cat((nr, vr), -1)).squeeze(-1) - 1.5
+        if not self.skip_enabled:
+            skip_logits = torch.full_like(skip_logits, -1e4)
         soft_match, rejection, reference_skip = _monotone_marginals(
             match_logits, reject_logits, skip_logits)
         row_match = soft_match.sum(-1)
@@ -235,8 +239,9 @@ class ACEF(nn.Module):
 
 
 class APRAEvidenceHead(nn.Module):
-    def __init__(self, hidden=HIDDEN, heads=4):
+    def __init__(self, hidden=HIDDEN, heads=4, use_structural_residual=True):
         super().__init__()
+        self.use_structural_residual = use_structural_residual
         self.input = nn.Linear(hidden * 6 + 2, hidden)
         layer = nn.TransformerEncoderLayer(hidden, heads, hidden*2, dropout=.1,
                                            batch_first=True, norm_first=True)
@@ -244,8 +249,20 @@ class APRAEvidenceHead(nn.Module):
         nn.init.zeros_(self.out.weight); nn.init.zeros_(self.out.bias)
 
     def forward(self, nq, vq, alignment):
-        features = torch.cat((alignment["unmatched_numeric"], alignment["unmatched_visual"],
-            alignment["structural_numeric"], alignment["structural_visual"],
+        if self.use_structural_residual:
+            unmatched_numeric = alignment["unmatched_numeric"]
+            unmatched_visual = alignment["unmatched_visual"]
+            structural_numeric = alignment["structural_numeric"]
+            structural_visual = alignment["structural_visual"]
+        else:
+            # Preserve the scoring-head architecture and parameter count so E9 is
+            # an input-mechanism ablation rather than a capacity ablation.
+            unmatched_numeric = torch.zeros_like(alignment["unmatched_numeric"])
+            unmatched_visual = torch.zeros_like(alignment["unmatched_visual"])
+            structural_numeric = torch.zeros_like(alignment["structural_numeric"])
+            structural_visual = torch.zeros_like(alignment["structural_visual"])
+        features = torch.cat((unmatched_numeric, unmatched_visual,
+            structural_numeric, structural_visual,
             alignment["aligned_numeric"], alignment["aligned_visual"],
             alignment["rejection"][...,None], alignment["reliability"][...,None]), -1)
         delta = torch.tanh(self.out(self.temporal(F.gelu(self.input(features)))).squeeze(-1))
@@ -269,17 +286,20 @@ class GatedFusion(nn.Module):
 
 class APRAACEF(nn.Module):
     def __init__(self, aligner="apra", fusion="acef", reject=True,
-                 hidden=HIDDEN, heads=4, layers=2):
+                 hidden=HIDDEN, heads=4, layers=2, skip=True,
+                 structural_residual=True):
         super().__init__(); self.aligner_name = aligner; self.fusion_name = fusion
         self.numeric = NumericPatchEncoder(hidden, layers, heads)
         self.visual = VisualColumnEncoder(hidden)
         if aligner == "apra":
-            self.aligner = AnomalyPreservingReferenceAlignment(hidden, heads, reject)
+            self.aligner = AnomalyPreservingReferenceAlignment(
+                hidden, heads, reject_enabled=reject, skip_enabled=skip)
         elif aligner == "fixed_dtw": self.aligner = FixedDTWAlignment()
         elif aligner == "cross_attention": self.aligner = OrdinaryCrossAttentionAlignment(hidden, heads)
         else: raise ValueError(aligner)
         if fusion == "acef": self.fusion = ACEF(hidden, heads)
-        elif fusion == "apra_head": self.fusion = APRAEvidenceHead(hidden, heads)
+        elif fusion == "apra_head":
+            self.fusion = APRAEvidenceHead(hidden, heads, structural_residual)
         elif fusion == "gated": self.fusion = GatedFusion(hidden, heads)
         else: raise ValueError(fusion)
 
