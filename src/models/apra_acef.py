@@ -315,6 +315,46 @@ def reversible_warp(tokens: torch.Tensor, amplitudes: torch.Tensor | None = None
     return target @ tokens, target
 
 
+def selective_time_warp(tokens: torch.Tensor, mode_ids: torch.Tensor | None = None,
+                        amplitudes: torch.Tensor | None = None,
+                        centers: torch.Tensor | None = None):
+    """Known monotone token warps for shift, local stretch and smooth deformation.
+
+    The returned matrix maps every warped query token back to the exact source
+    token coordinates.  Endpoints stay anchored, so the target remains compatible
+    with the fixed T3 reference columns and never wraps time around.
+    """
+    batch, steps, _ = tokens.shape
+    x = torch.arange(steps, device=tokens.device, dtype=tokens.dtype)
+    phase = x / max(steps - 1, 1)
+    if mode_ids is None:
+        mode_ids = torch.arange(batch, device=tokens.device) % 3
+    if amplitudes is None:
+        amplitudes = (torch.rand(batch, device=tokens.device, dtype=tokens.dtype) * 2 - 1)
+    if centers is None:
+        centers = 0.3 + 0.4 * torch.rand(batch, device=tokens.device, dtype=tokens.dtype)
+    shift = 1.25 * amplitudes[:, None] * torch.sin(torch.pi * phase)[None]
+    stretch = .70 * amplitudes[:, None] * torch.sin(2 * torch.pi * phase)[None]
+    center = centers[:, None] * (steps - 1)
+    width = max(steps / 4.5, 1.0)
+    bump = torch.exp(-.5 * ((x[None] - center) / width).square())
+    deform = amplitudes[:, None] * bump * torch.sin(torch.pi * phase)[None]
+    offsets = torch.where(mode_ids[:, None] == 0, shift,
+                          torch.where(mode_ids[:, None] == 1, stretch, deform))
+    coordinates = (x[None] + offsets).clamp(0, steps - 1)
+    # The fixed amplitudes above are monotone by construction; assert this in the
+    # production path because a non-monotone target would invalidate L_select.
+    if torch.any(coordinates[:, 1:] + 1e-6 < coordinates[:, :-1]):
+        raise RuntimeError("selective_time_warp produced a non-monotone mapping")
+    left = coordinates.floor().long().clamp(0, steps - 1)
+    right = (left + 1).clamp(0, steps - 1)
+    fraction = coordinates - left
+    target = tokens.new_zeros(batch, steps, steps)
+    target.scatter_add_(2, left[..., None], (1 - fraction)[..., None])
+    target.scatter_add_(2, right[..., None], fraction[..., None])
+    return target @ tokens, target, mode_ids
+
+
 @dataclass(frozen=True)
 class LossWeights:
     path: float = 1.0
@@ -332,6 +372,71 @@ def path_loss(output: Mapping[str, torch.Tensor], target: torch.Tensor) -> torch
     identity = torch.eye(target.shape[1], device=target.device)[None]
     cycle = F.smooth_l1_loss(match @ inverse, identity.expand_as(match))
     return cross_entropy + .25*reject + .25*cycle
+
+
+def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    weights = mask.to(values.dtype)
+    return (values * weights).sum() / weights.sum().clamp_min(1.0)
+
+
+def _target_match_nll(output: Mapping[str, torch.Tensor], target: torch.Tensor,
+                      mask: torch.Tensor) -> torch.Tensor:
+    # Use unnormalised marginals: rejecting a supervised normal query therefore
+    # cannot be hidden by row normalisation.
+    match = output["alignment"]["soft_match"].clamp_min(1e-8)
+    per_token = -(target * match.log()).sum(-1)
+    return _masked_mean(per_token, mask)
+
+
+def selective_alignment_loss(clean: Mapping[str, torch.Tensor],
+                             synthetic: Mapping[str, torch.Tensor],
+                             warped: Mapping[str, torch.Tensor],
+                             warp_target: torch.Tensor,
+                             altered: torch.Tensor,
+                             structural_reject: torch.Tensor,
+                             *, supervise_normal_warp: bool = True,
+                             supervise_reject: bool = True) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Anomaly-aware Match/Query-Reject supervision for APRA.
+
+    Clean and unchanged tokens retain their already T3-aligned diagonal anchor.
+    Known normal warps supervise the composed temporal correspondence.  Only
+    perturbation families declared to destroy correspondence supervise Query
+    Reject; matchable amplitude/trend changes remain aligned and are represented
+    by APRA residuals.  Reference Skip receives no anomaly target.
+    """
+    steps = altered.shape[1]
+    identity = torch.eye(steps, device=altered.device,
+                         dtype=clean["alignment"]["soft_match"].dtype)
+    identity = identity[None].expand(altered.shape[0], -1, -1)
+    normal = ~altered.bool()
+    matchable_changed = altered.bool() & ~structural_reject.bool()
+    synthetic_match = normal | matchable_changed
+    clean_mask = torch.ones_like(altered, dtype=torch.bool)
+    zero = clean["delta"].sum() * 0
+    clean_anchor = _target_match_nll(clean, identity, clean_mask)
+    synthetic_anchor = _target_match_nll(synthetic, identity, synthetic_match)
+    warp_match = (_target_match_nll(warped, warp_target, clean_mask)
+                  if supervise_normal_warp else zero)
+    # Clean/normal rows should remain matchable.  This term is kept separate from
+    # the structural reject target so the audit can detect state collapse.
+    normal_reject = -torch.log1p(-torch.cat((
+        clean["alignment"]["rejection"].reshape(-1),
+        synthetic["alignment"]["rejection"][synthetic_match].reshape(-1),
+        warped["alignment"]["rejection"].reshape(-1) if supervise_normal_warp
+        else warped["alignment"]["rejection"][:, :0].reshape(-1),
+    )).clamp(max=1 - 1e-6)).mean()
+    reject = synthetic["alignment"]["rejection"]
+    reject_target = (_masked_mean(-reject.clamp_min(1e-8).log(), structural_reject)
+                     if supervise_reject and structural_reject.any() else zero)
+    # Keep Reference Skip in its independent sequence-compression role.  The weak
+    # clean prior prevents global skip collapse and never uses anomaly masks.
+    skip_prior = -torch.log1p(-clean["alignment"]["reference_skip"].clamp(max=1-1e-6)).mean()
+    components = {"clean_anchor": clean_anchor, "synthetic_anchor": synthetic_anchor,
+                  "warp_match": warp_match, "normal_reject": normal_reject,
+                  "structural_reject": reject_target, "skip_prior": skip_prior}
+    total = (.20 * clean_anchor + .20 * synthetic_anchor + .25 * warp_match +
+             .10 * normal_reject + .20 * reject_target + .05 * skip_prior)
+    return total, components
 
 
 def explanation_loss(output: Mapping[str, torch.Tensor], untouched: torch.Tensor) -> torch.Tensor:

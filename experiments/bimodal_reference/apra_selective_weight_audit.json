@@ -1,0 +1,131 @@
+{
+  "labels_used": false,
+  "rule": "round_0.05(clip(median_initial_Ldetect/median_initial_Lselect,0.25,4.0))",
+  "rows": [
+    {
+      "dataset": "realTraffic",
+      "select": 1.05289888381958,
+      "detect": 2.368358612060547,
+      "select_clean_anchor": 1.107831597328186,
+      "select_synthetic_anchor": 1.1012334823608398,
+      "select_warp_match": 1.4309591054916382,
+      "select_normal_reject": 0.555995762348175,
+      "select_structural_reject": 0.8498666286468506,
+      "select_skip_prior": 0.5554620623588562
+    },
+    {
+      "dataset": "realTweets",
+      "select": 1.0995268821716309,
+      "detect": 2.5652177333831787,
+      "select_clean_anchor": 1.2076479196548462,
+      "select_synthetic_anchor": 1.1772388219833374,
+      "select_warp_match": 1.5084718465805054,
+      "select_normal_reject": 0.6311206817626953,
+      "select_structural_reject": 0.7537793517112732,
+      "select_skip_prior": 0.6312716007232666
+    },
+    {
+      "dataset": "SMAP",
+      "select": 1.0797019004821777,
+      "detect": 2.2140088081359863,
+      "select_clean_anchor": 1.1522566080093384,
+      "select_synthetic_anchor": 1.1433624029159546,
+      "select_warp_match": 1.474225401878357,
+      "select_normal_reject": 0.6016902327537537,
+      "select_structural_reject": 0.8092141151428223,
+      "select_skip_prior": 0.600196123123169
+    },
+    {
+      "dataset": "MSL",
+      "select": 1.1081175804138184,
+      "detect": 2.5585923194885254,
+      "select_clean_anchor": 1.221678376197815,
+      "select_synthetic_anchor": 1.1991292238235474,
+      "select_warp_match": 1.5209647417068481,
+      "select_normal_reject": 0.645728349685669,
+      "select_structural_reject": 0.7346100807189941,
+      "select_skip_prior": 0.6444005966186523
+    },
+    {
+      "dataset": "artificialWithAnomaly",
+      "select": 1.1037763357162476,
+      "detect": 1.7486603260040283,
+      "select_clean_anchor": 1.198809266090393,
+      "select_synthetic_anchor": 1.1791653633117676,
+      "select_warp_match": 1.5081254243850708,
+      "select_normal_reject": 0.6173194050788879,
+      "select_structural_reject": 0.7928164601325989,
+      "select_skip_prior": 0.6170962452888489
+    },
+    {
+      "dataset": "realAdExchange",
+      "select": 1.0992507934570312,
+      "detect": 2.360736131668091,
+      "select_clean_anchor": 1.2038516998291016,
+      "select_synthetic_anchor": 1.1758387088775635,
+      "select_warp_match": 1.5167362689971924,
+      "select_normal_reject": 0.6424230337142944,
+      "select_structural_reject": 0.7388983368873596,
+      "select_skip_prior": 0.6421329379081726
+    },
+    {
+      "dataset": "realAWSCloudwatch",
+      "select": 1.046195149421692,
+      "detect": 2.3272294998168945,
+      "select_clean_anchor": 1.0946534872055054,
+      "select_synthetic_anchor": 1.075818657875061,
+      "select_warp_match": 1.431430697441101,
+      "select_normal_reject": 0.5686166882514954,
+      "select_structural_reject": 0.8448965549468994,
+      "select_skip_prior": 0.5680420994758606
+    },
+    {
+      "dataset": "YAHOOA1",
+      "select": 1.0522165298461914,
+      "detect": 2.3976168632507324,
+      "select_clean_anchor": 1.1158088445663452,
+      "select_synthetic_anchor": 1.1086634397506714,
+      "select_warp_match": 1.441404938697815,
+      "select_normal_reject": 0.5722838640213013,
+      "select_structural_reject": 0.8059965372085571,
+      "select_skip_prior": 0.5708621144294739
+    },
+    {
+      "dataset": "YAHOOA2",
+      "select": 1.0877704620361328,
+      "detect": 2.077592372894287,
+      "select_clean_anchor": 1.1736055612564087,
+      "select_synthetic_anchor": 1.1542092561721802,
+      "select_warp_match": 1.4832735061645508,
+      "select_normal_reject": 0.6108222603797913,
+      "select_structural_reject": 0.7987926006317139,
+      "select_skip_prior": 0.610966145992279
+    },
+    {
+      "dataset": "YAHOOA3",
+      "select": 1.1076055765151978,
+      "detect": 1.7443751096725464,
+      "select_clean_anchor": 1.201110601425171,
+      "select_synthetic_anchor": 1.189440369606018,
+      "select_warp_match": 1.530156135559082,
+      "select_normal_reject": 0.6567091345787048,
+      "select_structural_reject": 0.7428392171859741,
+      "select_skip_prior": 0.6543519496917725
+    },
+    {
+      "dataset": "YAHOOA4",
+      "select": 1.0673679113388062,
+      "detect": 2.4252378940582275,
+      "select_clean_anchor": 1.1323297023773193,
+      "select_synthetic_anchor": 1.1261286735534668,
+      "select_warp_match": 1.4691680669784546,
+      "select_normal_reject": 0.6032634973526001,
+      "select_structural_reject": 0.7901403903961182,
+      "select_skip_prior": 0.6005963087081909
+    }
+  ],
+  "median_select": 1.0877704620361328,
+  "median_detect": 2.360736131668091,
+  "raw_ratio": 2.1702521019454504,
+  "lambda_select": 2.15
+}

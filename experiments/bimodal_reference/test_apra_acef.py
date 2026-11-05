@@ -2,7 +2,7 @@ import torch
 
 from src.models.apra_acef import (
     APRAACEF, LossWeights, detection_loss, explanation_loss, gradient_norms,
-    path_loss, reversible_warp,
+    path_loss, reversible_warp, selective_alignment_loss, selective_time_warp,
 )
 
 
@@ -47,6 +47,27 @@ def test_three_losses_reach_expected_modules_after_head_activation():
         assert norms["all"]>0
     model.zero_grad(set_to_none=True); losses[-1].backward(); norms=gradient_norms(model)
     assert norms["apra"]>0 and norms["acef"]>0
+
+
+def test_selective_alignment_targets_and_gradients():
+    model=APRAACEF("apra","apra_head",True)
+    nq,vq,nr,vr=token_batch(6); clean=model.forward_tokens(nq,vq,nr,vr)
+    ns=nq.clone(); vs=vq.clone(); ns[:,4:8]+=1.; vs[:,4:8]-=.5
+    synthetic=model.forward_tokens(ns,vs,nr,vr)
+    warped_n,target,modes=selective_time_warp(nq)
+    warped=model.forward_tokens(warped_n,target@vq,nr,vr)
+    altered=torch.zeros(6,14,dtype=torch.bool); altered[:,4:8]=True
+    structural=altered.clone(); structural[1::2]=False
+    loss,parts=selective_alignment_loss(clean,synthetic,warped,target,altered,structural)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert set(parts)=={"clean_anchor","synthetic_anchor","warp_match","normal_reject",
+                        "structural_reject","skip_prior"}
+    assert set(modes.tolist())=={0,1,2}
+    assert sum(float(p.grad.square().sum()) for p in model.aligner.parameters()
+               if p.grad is not None)>0
+    coordinates=(target*torch.arange(14,dtype=target.dtype)[None,None]).sum(-1)
+    assert torch.all(coordinates[:,1:]>=coordinates[:,:-1]-1e-6)
 
 
 def test_controls_are_distinct_and_reference_changes_output():
