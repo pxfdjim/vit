@@ -1,4 +1,4 @@
-"""Audited MindTS Affiliation-F and VUS wrappers used by APRA evaluation."""
+"""Audited MindTS Affiliation-F and VUS metric wrappers."""
 from __future__ import annotations
 
 from dataclasses import dataclass

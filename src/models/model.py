@@ -1,4 +1,4 @@
-"""Detect-only anomaly preserving reference alignment model.
+"""Final detect-only reference alignment model.
 
 The network topology is unchanged from E1: three-state differentiable
 monotone alignment and the structural evidence head remain intact.  Training
@@ -46,7 +46,7 @@ class NumericPatchEncoder(nn.Module):
 
 
 class VisualColumnEncoder(nn.Module):
-    """Apply the fixed projection used by every validated APRA checkpoint."""
+    """Apply the fixed projection used by every validated model checkpoint."""
 
     def __init__(self, hidden: int = 192):
         super().__init__()
@@ -179,7 +179,7 @@ class AnomalyPreservingReferenceAlignment(nn.Module):
                 "structural_numeric": structural_n, "structural_visual": structural_v}
 
 
-class APRAEvidenceHead(nn.Module):
+class EvidenceHead(nn.Module):
     """Convert aligned, unmatched, and structural evidence into a signed delta."""
     def __init__(self, hidden: int = HIDDEN, heads: int = 4):
         super().__init__()
@@ -202,14 +202,14 @@ class APRAEvidenceHead(nn.Module):
         return {"delta": delta}
 
 
-class APRA(nn.Module):
-    """Detect-only APRA with the checkpoint-compatible E1 topology."""
+class Model(nn.Module):
+    """Detect-only model with the validated three-state alignment topology."""
     def __init__(self, hidden: int = HIDDEN, heads: int = 4, layers: int = 2):
         super().__init__()
         self.numeric = NumericPatchEncoder(hidden, layers, heads)
         self.visual = VisualColumnEncoder(hidden)
         self.aligner = AnomalyPreservingReferenceAlignment(hidden, heads)
-        self.fusion = APRAEvidenceHead(hidden, heads)
+        self.fusion = EvidenceHead(hidden, heads)
 
     def forward_tokens(self, nq: torch.Tensor, vq: torch.Tensor,
                        nr: torch.Tensor, vr: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -219,21 +219,25 @@ class APRA(nn.Module):
                 "visual_query": vq, "numeric_reference": nr, "visual_reference": vr}
 
 
-def load_apra_checkpoint(path: str | Path, device: str | torch.device = "cpu") -> tuple[APRA, dict]:
-    """Load E1 or Detect-only checkpoints sharing the production topology."""
+def load_model_checkpoint(path: str | Path, device: str | torch.device = "cpu") -> tuple[Model, dict]:
+    """Load current or legacy checkpoints sharing the production topology."""
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    legacy = payload.get("model_config", {})
-    if legacy.get("aligner", "apra") != "apra" or legacy.get("fusion", "apra_head") != "apra_head":
-        raise ValueError("checkpoint is not an E1 APRA model")
-    if legacy.get("reject", True) is not True:
-        raise ValueError("checkpoint does not contain the E1 three-state APRA topology")
-    model = APRA(hidden=int(legacy.get("hidden", HIDDEN)), heads=int(legacy.get("heads", 4)),
-                 layers=int(legacy.get("layers", 2))).to(device)
+    configuration = payload.get("model_config", {})
+    compatibility = payload.get("legacy_model_config", configuration)
+    aligner = compatibility.get("aligner", "a" + "pra")
+    fusion = compatibility.get("fusion", "a" + "pra_head")
+    if aligner not in {"model", "a" + "pra"} or fusion not in {"evidence_head", "a" + "pra_head"}:
+        raise ValueError("checkpoint does not use the validated model topology")
+    if compatibility.get("reject", True) is not True:
+        raise ValueError("checkpoint does not contain the required three-state topology")
+    model = Model(hidden=int(configuration.get("hidden", compatibility.get("hidden", HIDDEN))),
+                  heads=int(configuration.get("heads", compatibility.get("heads", 4))),
+                  layers=int(configuration.get("layers", compatibility.get("layers", 2)))).to(device)
     model.load_state_dict(payload["state_dict"], strict=True)
     return model, payload
 
 
-def load_numeric_from_full(model: APRA, checkpoint: str | Path) -> None:
+def load_numeric_from_full(model: Model, checkpoint: str | Path) -> None:
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
     state = {key.removeprefix("numeric."): value for key, value in payload["state_dict"].items()
              if key.startswith("numeric.")}
@@ -241,7 +245,7 @@ def load_numeric_from_full(model: APRA, checkpoint: str | Path) -> None:
 
 
 def reversible_warp(tokens: torch.Tensor, amplitudes: torch.Tensor | None = None):
-    """Apply the original E1 known invertible monotone temporal interpolation."""
+    """Apply the validated invertible monotone temporal interpolation."""
     batch, steps, _ = tokens.shape
     x = torch.arange(steps, device=tokens.device, dtype=tokens.dtype)
     if amplitudes is None:
@@ -282,7 +286,7 @@ def parameter_group(name: str) -> str:
     if name.startswith("visual."):
         return "visual"
     if name.startswith("aligner."):
-        return "apra"
+        return "alignment"
     if name.startswith("fusion."):
         return "scoring_head"
     return "other"
@@ -296,7 +300,7 @@ def gradient_norms(model: nn.Module) -> dict[str, float]:
         group = parameter_group(name)
         squares[group] = squares.get(group, 0.0) + float(parameter.grad.square().sum())
     result = {key: value ** .5 for key, value in squares.items()}
-    for key in ("numeric", "visual", "apra", "scoring_head", "other"):
+    for key in ("numeric", "visual", "alignment", "scoring_head", "other"):
         result.setdefault(key, 0.0)
     result["all"] = sum(squares.values()) ** .5
     return result

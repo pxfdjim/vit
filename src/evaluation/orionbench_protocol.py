@@ -1,4 +1,4 @@
-"""Dataset-native OrionBench data protocol for APRA training and evaluation."""
+"""Dataset-native OrionBench data protocol for training and evaluation."""
 from __future__ import annotations
 
 import ast

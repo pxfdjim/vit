@@ -1,4 +1,4 @@
-"""Threshold and interval utilities used by the APRA evaluation protocol."""
+"""Threshold and interval utilities used by the evaluation protocol."""
 from __future__ import annotations
 
 import numpy as np

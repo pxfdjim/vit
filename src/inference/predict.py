@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Detect-only APRA correction on frozen B3 scores and T3 paths."""
+"""Run the final model correction on frozen B3 scores and T3 paths."""
 from __future__ import annotations
 
 import argparse
@@ -19,25 +19,26 @@ if str(ROOT) not in sys.path:
 from src.evaluation.orionbench_protocol import DATASETS, evaluation_frame, signal_names
 from src.inference.artifacts import (publish_json_no_replace, publish_npz_no_replace,
                                      read_score, write_score)
-from src.apra.cache import (expected_window_count, input_digest, intermediate_cache_path,
-                            load_final_tokens, validate_intermediate_cache)
-from src.apra.reference import (column_map, fitted_standardized_windows, match_paths,
+from src.core.visual_features import (expected_window_count, input_digest,
+                                      intermediate_cache_path, load_final_tokens,
+                                      validate_intermediate_cache)
+from src.core.reference import (column_map, fitted_standardized_windows, match_paths,
                                 patch_tokens, point_scores_from_maps, positive_median,
                                 select_reference_windows, visual_costs)
-from src.models.apra import load_apra_checkpoint
+from src.models.model import load_model_checkpoint
 
 
-VARIANTS = ("B3", "E6_Detect_only")
+VARIANTS = ("B3", "Model")
 
 
-def load_caches(raw: np.ndarray, context: dict, config: dict):
+def load_visual_features(raw: np.ndarray, context: dict, config: dict):
     digest = input_digest(raw)
     windows = expected_window_count(len(raw))
-    _, final_path = load_final_tokens([Path(path) for path in config["cache"]["final_cache_roots"]],
+    _, final_path = load_final_tokens([Path(path) for path in config["visual_features"]["final_cache_roots"]],
                                      context, digest, windows)
     final = torch.load(final_path, map_location="cpu", weights_only=True)
     candidates = [intermediate_cache_path(Path(root), context, digest)
-                  for root in config["cache"]["block_cache_roots"]]
+                  for root in config["visual_features"]["block_cache_roots"]]
     block_path = next((path for path in candidates if path.is_file()), None)
     if block_path is None:
         raise FileNotFoundError(f"missing Block-6 cache: {candidates}")
@@ -147,7 +148,7 @@ def main() -> int:
             frame = evaluation_frame(data_root, dataset, signal)
             raw = frame.value.to_numpy(np.float64)
             timestamps = frame.timestamp.to_numpy()
-            final, block, _, _, digest = load_caches(
+            final, block, _, _, digest = load_visual_features(
                 raw, {"dataset": dataset, "signal": signal}, config)
             patch = patch_tokens(block["intermediate_patch"]).float().to(device)
             pool = select_reference_windows(patch_tokens(final["patch"]).to(device))
@@ -168,7 +169,7 @@ def main() -> int:
             if not np.array_equal(source_timestamps, timestamps):
                 raise RuntimeError("B3 timestamp mismatch")
             if loaded_dataset != dataset:
-                model, _ = load_apra_checkpoint(
+                model, _ = load_model_checkpoint(
                     Path(config["checkpoint_root"]) / f"{dataset}.pt", device)
                 model.eval()
                 for parameter in model.parameters():
@@ -181,14 +182,14 @@ def main() -> int:
             diagnostics.update({"delta_calibration_scale": scale,
                                 "inference_seconds": time.perf_counter() - model_tick})
             diagnostic_rows.append({"dataset": dataset, "signal": signal, **diagnostics})
-            for name, score in (("B3", b3), ("E6_Detect_only", final_score)):
+            for name, score in (("B3", b3), ("Model", final_score)):
                 write_score(args.output_root / "point_scores" / dataset / signal / f"{name}.npz",
                             score, timestamps,
                             {"variant": name, "labels_opened": False,
                              "fixed_reference": "T3", "fixed_dtw_anchor": "T3",
                              "code_commit": commit, "input_digest": digest[:20],
-                             "base": "B3" if name == "E6_Detect_only" else None,
-                             "gamma": gamma if name == "E6_Detect_only" else None},
+                             "base": "B3" if name == "Model" else None,
+                             "gamma": gamma if name == "Model" else None},
                             time.perf_counter() - tick)
             publish_npz_no_replace(diagnostic_path, point_delta=point_delta)
             records.append({"dataset": dataset, "signal": signal, "status": "passed",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run final APRA inference across available GPUs."""
+"""Run final model inference across available GPUs."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKER = ROOT / "src/inference/apra.py"
+WORKER = ROOT / "src/inference/predict.py"
 
 
 def main() -> int:

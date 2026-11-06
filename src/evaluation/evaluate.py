@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate Detect-only APRA scores with the immutable OrionBench metrics."""
+"""Evaluate final model scores with the immutable OrionBench metrics."""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +20,7 @@ from src.evaluation.orionbench_protocol import (DATASETS, evaluation_frame,
 from src.evaluation.intervals import compute_detection_intervals
 
 
-VARIANTS = ("B3", "E6_Detect_only")
+VARIANTS = ("B3", "Model")
 
 
 def event_hits(events, intervals):
@@ -113,17 +113,17 @@ def evaluate_shard(args, config):
     shard_root = args.output_root / "evaluation_shards"
     shard_root.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(metric_rows).to_csv(
-        shard_root / f"apra_final_metrics_worker_{args.worker_index:02d}.csv", index=False)
+        shard_root / f"model_metrics_worker_{args.worker_index:02d}.csv", index=False)
     pd.DataFrame(event_rows).to_csv(
-        shard_root / f"apra_final_events_worker_{args.worker_index:02d}.csv", index=False)
+        shard_root / f"model_events_worker_{args.worker_index:02d}.csv", index=False)
     pd.DataFrame(alignment_rows).to_csv(
-        shard_root / f"apra_final_alignment_worker_{args.worker_index:02d}.csv", index=False)
+        shard_root / f"model_alignment_worker_{args.worker_index:02d}.csv", index=False)
 
 
 def combine(args, config):
     shard_root = args.output_root / "evaluation_shards"
     def read(kind):
-        paths = sorted(shard_root.glob(f"apra_final_{kind}_worker_*.csv"))
+        paths = sorted(shard_root.glob(f"model_{kind}_worker_*.csv"))
         if len(paths) != args.num_workers:
             raise RuntimeError(f"expected {args.num_workers} {kind} shards, found {len(paths)}")
         return pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate final APRA scores in parallel CPU shards."""
+"""Evaluate final model scores in parallel CPU shards."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKER = ROOT / "src/evaluation/apra.py"
+WORKER = ROOT / "src/evaluation/evaluate.py"
 
 
 def main() -> int:

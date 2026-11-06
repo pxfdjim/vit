@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from src.apra.cache import expected_window_count, input_digest
-from src.apra.reference import (
+from src.core.visual_features import expected_window_count, input_digest
+from src.core.reference import (
     column_map,
     match_paths,
     point_scores_from_maps,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the streamlined APRA model with L_detect only."""
+"""Train the streamlined final model with the detection objective only."""
 from __future__ import annotations
 
 import argparse
@@ -19,12 +19,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.models.apra import (APRA, LossWeights, detection_loss, gradient_norms,
-                             load_numeric_from_full, reversible_warp)
+from src.models.model import (Model, LossWeights, detection_loss, gradient_norms,
+                              load_numeric_from_full, reversible_warp)
 
 
 @torch.no_grad()
-def projected_visual(model: APRA, visual: torch.Tensor, device: torch.device,
+def projected_visual(model: Model, visual: torch.Tensor, device: torch.device,
                      batch_size: int = 256) -> torch.Tensor:
     return torch.cat([model.visual(visual[start:start + batch_size].float().to(device)).half()
                       for start in range(0, len(visual), batch_size)])
@@ -39,7 +39,7 @@ def base_proxy(nq, vq, nr, vr):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument("--training-data", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
@@ -52,23 +52,23 @@ def main() -> int:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     device = torch.device(args.device)
-    cached = torch.load(args.cache, map_location="cpu", weights_only=False)
-    if cached["labels_read"] or cached["seed"] != seed:
-        raise RuntimeError("cache integrity failure")
+    training_data = torch.load(args.training_data, map_location="cpu", weights_only=False)
+    if training_data["labels_read"] or training_data["seed"] != seed:
+        raise RuntimeError("training data integrity failure")
 
-    model = APRA(**config["model_config"]).to(device)
-    full_checkpoint = Path(config["full_checkpoint_root"]) / f"{cached['dataset']}.pt"
+    model = Model(**config["model_config"]).to(device)
+    full_checkpoint = Path(config["full_checkpoint_root"]) / f"{training_data['dataset']}.pt"
     load_numeric_from_full(model, full_checkpoint)
     initial_numeric = {name: value.detach().cpu().clone()
                        for name, value in model.numeric.state_dict().items()}
 
-    raw = cached["raw"].to(device)
-    synthetic_raw = cached["synthetic_raw"].to(device)
-    altered = cached["patch_mask"].to(device)
-    reference_ids = cached["reference_ids"].to(device)
-    reference_columns = cached["reference_columns"].to(device)
-    visual = projected_visual(model, cached["visual"], device)
-    synthetic_visual = projected_visual(model, cached["synthetic_visual"], device)
+    raw = training_data["raw"].to(device)
+    synthetic_raw = training_data["synthetic_raw"].to(device)
+    altered = training_data["patch_mask"].to(device)
+    reference_ids = training_data["reference_ids"].to(device)
+    reference_columns = training_data["reference_columns"].to(device)
+    visual = projected_visual(model, training_data["visual"], device)
+    synthetic_visual = projected_visual(model, training_data["synthetic_visual"], device)
     weights = LossWeights(**config["loss_weights"])
     generator = torch.Generator().manual_seed(seed)
     loader = DataLoader(torch.arange(len(raw)), batch_size=config["training"]["batch_size"],
@@ -123,8 +123,8 @@ def main() -> int:
     audit_parts["detect"].backward()
     gradient_audit = {"detect": gradient_norms(model)}
     model.zero_grad(set_to_none=True)
-    if detect_after_one_step["apra"] <= 0 or detect_after_one_step["scoring_head"] <= 0:
-        raise RuntimeError("L_detect gradient does not reach all APRA modules")
+    if detect_after_one_step["alignment"] <= 0 or detect_after_one_step["scoring_head"] <= 0:
+        raise RuntimeError("detection loss gradient does not reach all model modules")
 
     history = []
     updates = 0
@@ -158,21 +158,22 @@ def main() -> int:
     output = {
         "state_dict": {key: value.detach().cpu() for key, value in model.state_dict().items()},
         "model_config": config["model_config"],
-        "legacy_model_config": {"aligner": "apra", "fusion": "apra_head", "reject": True,
+        "legacy_model_config": {"aligner": "model", "fusion": "evidence_head", "reject": True,
                                 **config["model_config"]},
-        "dataset": cached["dataset"], "variant": "E6_Detect_only", "seed": seed,
+        "dataset": training_data["dataset"], "variant": "Model", "seed": seed,
         "history": history, "gradient_audit_by_loss": gradient_audit,
         "detect_gradient_after_one_step": detect_after_one_step,
         "numeric_max_abs_change": numeric_change,
         "parameter_counts": {"all": sum(p.numel() for p in model.parameters()),
                              "trainable": sum(p.numel() for p in model.parameters() if p.requires_grad),
                              "numeric": sum(p.numel() for p in model.numeric.parameters()),
-                             "apra": sum(p.numel() for p in model.aligner.parameters()),
+                             "alignment": sum(p.numel() for p in model.aligner.parameters()),
                              "scoring_head": sum(p.numel() for p in model.fusion.parameters())},
         "elapsed_seconds": elapsed, "optimizer_updates": updates,
         "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(device),
         "labels_used": False, "validation_split_used": False,
-        "checkpoint_selection": "fixed_final_epoch", "source_cache": str(args.cache),
+        "checkpoint_selection": "fixed_final_epoch",
+        "source_training_data": str(args.training_data),
         "numeric_initialization": str(full_checkpoint),
         "visual_initialization": "fixed_projection_seed_20261029",
         "loss_weights": config["loss_weights"], "active_losses": ["detect"],

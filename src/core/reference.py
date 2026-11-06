@@ -1,4 +1,4 @@
-"""T3 reference retrieval and score restoration used by final APRA."""
+"""T3 reference retrieval, constrained DTW, and score restoration."""
 from __future__ import annotations
 
 from dataclasses import dataclass

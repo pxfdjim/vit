@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.models.apra import (APRA, LossWeights, detection_loss, gradient_norms,
-                             reversible_warp)
+from src.models.model import (Model, LossWeights, detection_loss, gradient_norms,
+                              reversible_warp)
 
 
 def token_batch(batch=3):
@@ -17,7 +17,7 @@ def token_batch(batch=3):
 
 
 def test_three_state_path_mass_is_conserved():
-    model = APRA().eval()
+    model = Model().eval()
     alignment = model.forward_tokens(*token_batch())["alignment"]
     rows = alignment["soft_match"].sum(-1) + alignment["rejection"]
     columns = alignment["soft_match"].sum(-2) + alignment["reference_skip"]
@@ -26,7 +26,7 @@ def test_three_state_path_mass_is_conserved():
 
 
 def test_zero_initialized_head_preserves_b3():
-    model = APRA().eval()
+    model = Model().eval()
     delta = model.forward_tokens(*token_batch())["delta"]
     b3 = torch.randn_like(delta)
     assert torch.count_nonzero(delta) == 0
@@ -34,7 +34,7 @@ def test_zero_initialized_head_preserves_b3():
 
 
 def test_detect_loss_reaches_expected_modules_after_head_activation():
-    model = APRA()
+    model = Model()
     with torch.no_grad():
         model.fusion.out.weight.fill_(1e-3)
     nq, vq, nr, vr = token_batch(4)
@@ -50,4 +50,4 @@ def test_detect_loss_reaches_expected_modules_after_head_activation():
     model.zero_grad(set_to_none=True)
     loss.backward()
     norms = gradient_norms(model)
-    assert norms["apra"] > 0 and norms["scoring_head"] > 0
+    assert norms["alignment"] > 0 and norms["scoring_head"] > 0

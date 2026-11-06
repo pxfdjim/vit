@@ -1,4 +1,4 @@
-"""Immutable visual-cache contract used by APRA inference."""
+"""Read and validate immutable visual feature files used during inference."""
 from __future__ import annotations
 
 import hashlib
@@ -118,7 +118,7 @@ def validate_intermediate_cache(
     }
     for name, expected in expected_scalars.items():
         if cached.get(name) != expected:
-            raise RuntimeError(f"invalid {name} in APRA cache: {path}")
+            raise RuntimeError(f"invalid {name} in visual feature file: {path}")
     shapes = {
         "intermediate_patch": (expected_windows, PATCH_COUNT, TOKEN_DIMENSION),
         "curve_pixel_xy": (expected_windows, 14, 2),
@@ -127,6 +127,6 @@ def validate_intermediate_cache(
     for name, shape in shapes.items():
         tensor = cached.get(name)
         if not isinstance(tensor, torch.Tensor) or not tensor.is_floating_point():
-            raise RuntimeError(f"invalid {name} in APRA cache: {path}")
+            raise RuntimeError(f"invalid {name} in visual feature file: {path}")
         if tuple(tensor.shape) != shape or not torch.isfinite(tensor).all():
-            raise RuntimeError(f"invalid {name} shape/content in APRA cache: {path}")
+            raise RuntimeError(f"invalid {name} shape/content in visual feature file: {path}")

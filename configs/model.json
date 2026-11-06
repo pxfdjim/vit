@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "model": "E6_Detect_only",
+  "model": "Model",
   "data_root": "/home/pengxf/jim/VLM4TS/data",
   "full_checkpoint_root": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/artifacts/amr_orionbench_native_20261103/checkpoints",
-  "checkpoint_root": "/home/pengxf/jim/VLM4TS/.worktrees/apra-loss-weight-8d465ca/data/runs/apra_loss_weight_20261104_1c52066/checkpoints/E1_no_path/seed_20261104",
+  "checkpoint_root": "data/checkpoints/model",
   "feature_scoring_run": "/home/pengxf/jim/VLM4TS/.worktrees/amr-feature-scoring-c6e2e39/data/runs/amr_feature_scoring_20261103_c41f246",
   "normalization_stats": "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/runs/amr_orionbench_native_20261103/normalization_stats.json",
   "mindts_root": "/home/pengxf/jim/VLM4TS/.worktrees/unified-aff-vus-1e38ecf/.references/MindTS",
@@ -12,7 +12,7 @@
   "model_config": {"hidden": 192, "heads": 4, "layers": 2},
   "training": {"epochs": 16, "batch_size": 32, "learning_rate": 0.0003, "weight_decay": 0.02, "gradient_clip": 1.0, "checkpoint_selection": "fixed_final_epoch"},
   "loss_weights": {"detect_margin": 0.35, "gamma": 0.05},
-  "cache": {
+  "visual_features": {
     "final_cache_roots": [
       "/home/pengxf/jim/VLM4TS/.worktrees/amr-orionbench-9eb5719/data/cache/amr_orionbench_native_20261103/final",
       "/home/pengxf/jim/VLM4TS/.worktrees/vfg-paired-d593dfb/data/runs/vfg_paired_20261027/feature_cache",
