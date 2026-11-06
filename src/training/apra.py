@@ -23,15 +23,6 @@ from src.models.apra import (APRA, LossWeights, detection_loss, gradient_norms,
                              load_numeric_from_full, reversible_warp)
 
 
-def load_frozen_visual(model: APRA, checkpoint: Path) -> None:
-    payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    state = {name.removeprefix("visual."): value for name, value in payload["state_dict"].items()
-             if name.startswith("visual.")}
-    model.visual.load_state_dict(state, strict=True)
-    for parameter in model.visual.parameters():
-        parameter.requires_grad_(False)
-
-
 @torch.no_grad()
 def projected_visual(model: APRA, visual: torch.Tensor, device: torch.device,
                      batch_size: int = 256) -> torch.Tensor:
@@ -68,9 +59,6 @@ def main() -> int:
     model = APRA(**config["model_config"]).to(device)
     full_checkpoint = Path(config["full_checkpoint_root"]) / f"{cached['dataset']}.pt"
     load_numeric_from_full(model, full_checkpoint)
-    visual_checkpoint = (Path(config["rcca_run"]) / "checkpoints/M1_full" /
-                         f"seed_{seed}" / f"{cached['dataset']}.pt")
-    load_frozen_visual(model, visual_checkpoint)
     initial_numeric = {name: value.detach().cpu().clone()
                        for name, value in model.numeric.state_dict().items()}
 
@@ -185,7 +173,8 @@ def main() -> int:
         "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(device),
         "labels_used": False, "validation_split_used": False,
         "checkpoint_selection": "fixed_final_epoch", "source_cache": str(args.cache),
-        "numeric_initialization": str(full_checkpoint), "visual_initialization": str(visual_checkpoint),
+        "numeric_initialization": str(full_checkpoint),
+        "visual_initialization": "fixed_projection_seed_20261029",
         "loss_weights": config["loss_weights"], "active_losses": ["detect"],
         "active_sublosses": ["hard_ranking", "unchanged", "reversible_warp"],
     }

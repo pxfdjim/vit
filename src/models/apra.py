@@ -15,7 +15,49 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from src.models.bimodal_reference import NumericPatchEncoder, VisualColumnEncoder
+
+
+class NumericPatchEncoder(nn.Module):
+    """Encode sequence-normalized numeric windows as fourteen time tokens."""
+
+    def __init__(self, hidden: int = 192, layers: int = 2, heads: int = 4):
+        super().__init__()
+        self.local = nn.Sequential(
+            nn.Conv1d(4, 64, 5, padding=2), nn.GELU(),
+            nn.Conv1d(64, 96, 3, padding=1), nn.GELU(),
+        )
+        self.patch = nn.Linear(96 * 16, hidden)
+        self.position = nn.Parameter(torch.zeros(1, 14, hidden))
+        block = nn.TransformerEncoderLayer(
+            hidden, heads, hidden * 3, 0.1,
+            batch_first=True, norm_first=True, activation="gelu",
+        )
+        self.temporal = nn.TransformerEncoder(block, layers)
+        self.norm = nn.LayerNorm(hidden)
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        first = F.pad(values[:, 1:] - values[:, :-1], (1, 0))
+        second = F.pad(first[:, 1:] - first[:, :-1], (1, 0))
+        trend = F.avg_pool1d(values[:, None], 17, stride=1, padding=8)[:, 0]
+        encoded = self.local(torch.stack((values, first, second, trend), dim=1))
+        encoded = encoded.transpose(1, 2).reshape(values.shape[0], 14, 16 * 96)
+        encoded = self.patch(encoded) + self.position
+        return F.normalize(self.norm(self.temporal(encoded)), dim=-1)
+
+
+class VisualColumnEncoder(nn.Module):
+    """Apply the fixed projection used by every validated APRA checkpoint."""
+
+    def __init__(self, hidden: int = 192):
+        super().__init__()
+        generator = torch.Generator().manual_seed(20261029)
+        projection = torch.randn(14 * 768, hidden, generator=generator)
+        self.register_buffer("projection", projection / (14 * 768) ** 0.5)
+
+    def forward(self, visual: torch.Tensor) -> torch.Tensor:
+        grid = visual.reshape(-1, 14, 14, 768).permute(0, 2, 1, 3)
+        encoded = grid.reshape(grid.shape[0], 14, 14 * 768) @ self.projection
+        return F.normalize(F.layer_norm(encoded, (encoded.shape[-1],)), dim=-1)
 
 
 TOKENS = 14

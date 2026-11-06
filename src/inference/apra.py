@@ -19,15 +19,12 @@ if str(ROOT) not in sys.path:
 from src.evaluation.orionbench_protocol import DATASETS, evaluation_frame, signal_names
 from src.inference.artifacts import (publish_json_no_replace, publish_npz_no_replace,
                                      read_score, write_score)
+from src.apra.cache import (expected_window_count, input_digest, intermediate_cache_path,
+                            load_final_tokens, validate_intermediate_cache)
+from src.apra.reference import (column_map, fitted_standardized_windows, match_paths,
+                                patch_tokens, point_scores_from_maps, positive_median,
+                                select_reference_windows, visual_costs)
 from src.models.apra import load_apra_checkpoint
-from src.models.bimodal_reference_vit4ts import _fitted_standardized_windows, _visual_costs
-from src.models.curve_aware_clip import (expected_window_count, input_digest,
-    intermediate_cache_path, load_final_tokens, validate_intermediate_cache)
-from src.models.fixed_reference_numeric_evidence import positive_median
-from src.models.numeric_temporal_matching import match_paths
-from src.models.temporal_vit4ts import _column_map
-from src.models.vfg_paired_vit4ts import (_patch_tokens, point_scores_from_maps,
-                                          select_common_visual_windows)
 
 
 VARIANTS = ("B3", "E6_Detect_only")
@@ -50,7 +47,7 @@ def load_caches(raw: np.ndarray, context: dict, config: dict):
 
 
 def restore(local: torch.Tensor, full_length: int, device: torch.device) -> np.ndarray:
-    values = point_scores_from_maps(_column_map(local.double()), full_length=full_length,
+    values = point_scores_from_maps(column_map(local.double()), full_length=full_length,
                                     device=device)
     return np.asarray(values, np.float64)
 
@@ -152,9 +149,9 @@ def main() -> int:
             timestamps = frame.timestamp.to_numpy()
             final, block, _, _, digest = load_caches(
                 raw, {"dataset": dataset, "signal": signal}, config)
-            patch = _patch_tokens(block["intermediate_patch"]).float().to(device)
-            pool = select_common_visual_windows(_patch_tokens(final["patch"]).to(device))
-            costs = _visual_costs(patch.reshape(len(patch), 14, 14, -1), pool)
+            patch = patch_tokens(block["intermediate_patch"]).float().to(device)
+            pool = select_reference_windows(patch_tokens(final["patch"]).to(device))
+            costs = visual_costs(patch.reshape(len(patch), 14, 14, -1), pool)
             t3 = match_paths(costs, pool, band=2, penalty_scale=.1)
             with np.load(feature_root / "feature_diagnostics" / dataset / signal / "evidence.npz") as stored:
                 if not np.array_equal(t3.reference_ids.cpu().numpy(), stored["t3_reference_window_ids"]):
@@ -165,7 +162,7 @@ def main() -> int:
             reference_columns = t3.reference_columns.round().long().to(device)
             fitted = stats[dataset][signal]
             start = int(fitted["fit_points"]) if dataset in {"MSL", "SMAP"} else 0
-            windows = _fitted_standardized_windows(raw, fitted, start).to(device)
+            windows = fitted_standardized_windows(raw, fitted, start).to(device)
             b3, source_timestamps = read_score(
                 feature_root / "point_scores" / dataset / signal / "B3_raw_numeric_l010.npz")
             if not np.array_equal(source_timestamps, timestamps):

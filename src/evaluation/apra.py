@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 from src.evaluation.mindts_metrics import _events, affiliation_scores, fast_vus
 from src.evaluation.orionbench_protocol import (DATASETS, evaluation_frame,
     labels_for, load_truth, signal_names)
-from src.models.model_utils import compute_detection_intervals
+from src.evaluation.intervals import compute_detection_intervals
 
 
 VARIANTS = ("B3", "E6_Detect_only")
