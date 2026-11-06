@@ -5,6 +5,10 @@ test/
 # data
 data/
 
+# local experiments and worktrees
+experiments/
+.worktrees/
+
 # Python artifacts
 __pycache__/
 

@@ -711,7 +711,7 @@ def _publish_torch_no_replace(path: Path, payload: Mapping[str, Any]) -> bool:
 
 
 class VFGViT4TSBackend:
-    """Stateful end-to-end backend used by ``experiments/vfg_vit4ts/runner.py``.
+    """Stateful end-to-end backend for VFG-ViT4TS inference.
 
     CLIP is loaded once per worker.  Each signal is rendered and encoded once,
     then all requested variants share the cached base/mid/large tokens.  The
