@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the final E1 APRA model with L_path + L_detect only."""
+"""Train the streamlined APRA model with L_detect only."""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.models.apra import (APRA, LossWeights, detection_loss, gradient_norms,
-                             load_numeric_from_full, path_loss, reversible_warp)
+                             load_numeric_from_full, reversible_warp)
 
 
 def load_frozen_visual(model: APRA, checkpoint: Path) -> None:
@@ -104,17 +104,14 @@ def main() -> int:
         synthetic = model.forward_tokens(ns, vs, nr, vr)
         warped_n, target = reversible_warp(nq)
         warped = model.forward_tokens(warped_n, target @ vq, nr, vr)
-        return (clean, synthetic, warped, target, base_proxy(nq, vq, nr, vr),
+        return (clean, synthetic, warped, base_proxy(nq, vq, nr, vr),
                 base_proxy(ns, vs, nr, vr))
 
     def losses(indices):
-        clean, synthetic, warped, target, clean_base, synthetic_base = batch_outputs(indices)
-        parts = {
-            "path": path_loss(warped, target),
-            "detect": detection_loss(clean, synthetic, warped, clean_base, synthetic_base,
-                                     altered[indices], weights),
-        }
-        return weights.path * parts["path"] + weights.detect * parts["detect"], parts
+        clean, synthetic, warped, clean_base, synthetic_base = batch_outputs(indices)
+        detect = detection_loss(clean, synthetic, warped, clean_base, synthetic_base,
+                                altered[indices], weights)
+        return detect, {"detect": detect}
 
     first = next(iter(DataLoader(torch.arange(len(raw)),
                                  batch_size=config["training"]["batch_size"],
@@ -133,19 +130,10 @@ def main() -> int:
     optimizer = torch.optim.AdamW(trainable, lr=config["training"]["learning_rate"],
                                   weight_decay=config["training"]["weight_decay"])
 
-    gradient_audit = {}
-    for loss_name in ("path", "detect"):
-        model.zero_grad(set_to_none=True)
-        _, parts = losses(first)
-        parts[loss_name].backward()
-        gradient_audit[loss_name] = gradient_norms(model)
-        if loss_name == "path":
-            # The original E1 trainer evaluated one disabled L_explain audit
-            # between the path and detect audits.  Keep the no-op forward so a
-            # fresh E1 training run consumes the identical dropout/warp RNG
-            # sequence even though the obsolete loss is no longer exposed.
-            with torch.no_grad():
-                losses(first)
+    model.zero_grad(set_to_none=True)
+    _, audit_parts = losses(first)
+    audit_parts["detect"].backward()
+    gradient_audit = {"detect": gradient_norms(model)}
     model.zero_grad(set_to_none=True)
     if detect_after_one_step["apra"] <= 0 or detect_after_one_step["scoring_head"] <= 0:
         raise RuntimeError("L_detect gradient does not reach all APRA modules")
@@ -184,7 +172,7 @@ def main() -> int:
         "model_config": config["model_config"],
         "legacy_model_config": {"aligner": "apra", "fusion": "apra_head", "reject": True,
                                 **config["model_config"]},
-        "dataset": cached["dataset"], "variant": "E1_APRA", "seed": seed,
+        "dataset": cached["dataset"], "variant": "E6_Detect_only", "seed": seed,
         "history": history, "gradient_audit_by_loss": gradient_audit,
         "detect_gradient_after_one_step": detect_after_one_step,
         "numeric_max_abs_change": numeric_change,
@@ -198,7 +186,8 @@ def main() -> int:
         "labels_used": False, "validation_split_used": False,
         "checkpoint_selection": "fixed_final_epoch", "source_cache": str(args.cache),
         "numeric_initialization": str(full_checkpoint), "visual_initialization": str(visual_checkpoint),
-        "loss_weights": config["loss_weights"], "active_losses": ["path", "detect"],
+        "loss_weights": config["loss_weights"], "active_losses": ["detect"],
+        "active_sublosses": ["hard_ranking", "unchanged", "reversible_warp"],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(".tmp")

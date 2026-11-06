@@ -1,9 +1,9 @@
-"""Final anomaly preserving reference alignment model.
+"""Detect-only anomaly preserving reference alignment model.
 
-This module contains the production E1 APRA path only.  The model keeps the
-three-state differentiable monotone alignment, structural evidence head, and
-the original L_path + L_detect training objective used by the immutable E1
-checkpoints.
+The network topology is unchanged from E1: three-state differentiable
+monotone alignment and the structural evidence head remain intact.  Training
+uses only the validated detection objective; path supervision is intentionally
+absent.
 """
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ class APRAEvidenceHead(nn.Module):
 
 
 class APRA(nn.Module):
-    """Final E1 APRA network with a fixed production topology."""
+    """Detect-only APRA with the checkpoint-compatible E1 topology."""
     def __init__(self, hidden: int = HIDDEN, heads: int = 4, layers: int = 2):
         super().__init__()
         self.numeric = NumericPatchEncoder(hidden, layers, heads)
@@ -178,7 +178,7 @@ class APRA(nn.Module):
 
 
 def load_apra_checkpoint(path: str | Path, device: str | torch.device = "cpu") -> tuple[APRA, dict]:
-    """Load either an original E1 checkpoint or a checkpoint from this module."""
+    """Load E1 or Detect-only checkpoints sharing the production topology."""
     payload = torch.load(path, map_location="cpu", weights_only=True)
     legacy = payload.get("model_config", {})
     if legacy.get("aligner", "apra") != "apra" or legacy.get("fusion", "apra_head") != "apra_head":
@@ -216,26 +216,13 @@ def reversible_warp(tokens: torch.Tensor, amplitudes: torch.Tensor | None = None
 
 @dataclass(frozen=True)
 class LossWeights:
-    path: float = 1.0
-    detect: float = 1.0
     detect_margin: float = .35
     gamma: float = .05
 
 
-def path_loss(output: Mapping[str, torch.Tensor], target: torch.Tensor) -> torch.Tensor:
-    """Original E1 path cross entropy, reject prior, and cycle loss."""
-    match = _normalize_rows(output["alignment"]["soft_match"])
-    cross_entropy = -(target * match.clamp_min(1e-8).log()).sum(-1).mean()
-    reject = output["alignment"]["rejection"].mean()
-    inverse = _normalize_rows(target.transpose(1, 2))
-    identity = torch.eye(target.shape[1], device=target.device)[None]
-    cycle = F.smooth_l1_loss(match @ inverse, identity.expand_as(match))
-    return cross_entropy + .25 * reject + .25 * cycle
-
-
 def detection_loss(clean, synthetic, warped, clean_base, synthetic_base,
                    altered: torch.Tensor, weights: LossWeights) -> torch.Tensor:
-    """Original E1 hard-synthetic ranking and stability objective."""
+    """Hard-synthetic ranking plus unchanged and reversible-warp stability."""
     clean_score = clean_base.detach() + weights.gamma * clean["delta"]
     synthetic_score = synthetic_base.detach() + weights.gamma * synthetic["delta"]
     difficulty = (weights.detect_margin - (synthetic_base - clean_base).detach()).relu()

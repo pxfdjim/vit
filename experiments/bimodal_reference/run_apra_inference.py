@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the final E1 APRA correction on frozen B3 scores and T3 paths."""
+"""Run Detect-only APRA correction on frozen B3 scores and T3 paths."""
 from __future__ import annotations
 
 import argparse
@@ -26,7 +26,7 @@ from src.models.numeric_temporal_matching import match_paths
 from src.models.vfg_paired_vit4ts import _patch_tokens, select_common_visual_windows
 
 
-VARIANTS = ("B3", "E1_APRA")
+VARIANTS = ("B3", "E6_Detect_only")
 
 
 def signed_calibration(local, base, full_length, device):
@@ -147,7 +147,7 @@ def main() -> int:
                 raise RuntimeError("B3 timestamp mismatch")
             if loaded_dataset != dataset:
                 model, _ = load_apra_checkpoint(
-                    Path(config["e1_checkpoint_root"]) / f"{dataset}.pt", device)
+                    Path(config["checkpoint_root"]) / f"{dataset}.pt", device)
                 model.eval()
                 for parameter in model.parameters():
                     parameter.requires_grad_(False)
@@ -159,14 +159,14 @@ def main() -> int:
             diagnostics.update({"delta_calibration_scale": scale,
                                 "inference_seconds": time.perf_counter() - model_tick})
             diagnostic_rows.append({"dataset": dataset, "signal": signal, **diagnostics})
-            for name, score in (("B3", b3), ("E1_APRA", final_score)):
+            for name, score in (("B3", b3), ("E6_Detect_only", final_score)):
                 write_score(args.output_root / "point_scores" / dataset / signal / f"{name}.npz",
                             score, timestamps,
                             {"variant": name, "labels_opened": False,
                              "fixed_reference": "T3", "fixed_dtw_anchor": "T3",
                              "code_commit": commit, "input_digest": digest[:20],
-                             "base": "B3" if name == "E1_APRA" else None,
-                             "gamma": gamma if name == "E1_APRA" else None},
+                             "base": "B3" if name == "E6_Detect_only" else None,
+                             "gamma": gamma if name == "E6_Detect_only" else None},
                             time.perf_counter() - tick)
             publish_npz_no_replace(diagnostic_path, point_delta=point_delta)
             records.append({"dataset": dataset, "signal": signal, "status": "passed",

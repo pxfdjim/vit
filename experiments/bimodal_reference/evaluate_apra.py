@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate the final E1 APRA scores with the immutable OrionBench metrics."""
+"""Evaluate Detect-only APRA scores with the immutable OrionBench metrics."""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +20,7 @@ from experiments.bimodal_reference.orionbench_protocol import (DATASETS, evaluat
 from src.models.model_utils import compute_detection_intervals
 
 
-VARIANTS = ("B3", "E1_APRA")
+VARIANTS = ("B3", "E6_Detect_only")
 
 
 def event_hits(events, intervals):

@@ -8,7 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.models.apra import (APRA, LossWeights, detection_loss, gradient_norms,
-                             path_loss, reversible_warp)
+                             reversible_warp)
 
 
 def token_batch(batch=3):
@@ -33,7 +33,7 @@ def test_zero_initialized_head_preserves_b3():
     assert torch.equal(b3 + .05 * delta, b3)
 
 
-def test_both_losses_reach_expected_modules_after_head_activation():
+def test_detect_loss_reaches_expected_modules_after_head_activation():
     model = APRA()
     with torch.no_grad():
         model.fusion.out.weight.fill_(1e-3)
@@ -45,14 +45,9 @@ def test_both_losses_reach_expected_modules_after_head_activation():
     warped = model.forward_tokens(warped_n, target @ vq, nr, vr)
     altered = torch.zeros(4, 14, dtype=torch.bool)
     altered[:, 4:8] = True
-    losses = (path_loss(warped, target),
-              detection_loss(clean, synthetic, warped, torch.zeros(4, 14),
-                             torch.zeros(4, 14), altered, LossWeights()))
-    for loss in losses:
-        model.zero_grad(set_to_none=True)
-        loss.backward(retain_graph=True)
-        assert gradient_norms(model)["all"] > 0
+    loss = detection_loss(clean, synthetic, warped, torch.zeros(4, 14),
+                          torch.zeros(4, 14), altered, LossWeights())
     model.zero_grad(set_to_none=True)
-    losses[1].backward()
+    loss.backward()
     norms = gradient_norms(model)
     assert norms["apra"] > 0 and norms["scoring_head"] > 0
