@@ -4,15 +4,16 @@
 
 ## 代码结构
 
-- `src/models/model.py`：模型、三状态可微单调对齐、证据头和检测损失。
+- `src/models/model.py`：模型、三状态可微单调对齐和证据头。
 - `src/core/visual_features.py`：定位、读取并校验预生成的视觉特征文件。
 - `src/core/reference.py`：T3 参考检索、constrained-DTW、归一化和逐点分数恢复。
-- `src/training/train.py`：正式训练入口。
+- `src/training/build_frozen_b3.py`：构建训练所需的冻结 B3 反事实分数和 T3 路径。
+- `src/training/train.py`：正式训练入口；损失直接作用于校准后的最终逐点分数。
 - `src/inference/predict.py`：单进程推理与分数生成。
 - `src/inference/predict_workers.py`：多 GPU 推理启动器。
 - `src/evaluation/evaluate.py`：OrionBench 指标与事件评测。
 - `src/evaluation/evaluate_workers.py`：并行评测启动器。
-- `configs/model.json`：已验证的默认配置。
+- `configs/model.json`：当前评分一致性版本的默认配置。
 - `tests/test_model.py`、`tests/test_reference.py`：模型、梯度、T3 参考和分数恢复测试。
 
 `experiments/` 只存放临时消融、诊断和本地探索脚本，并由 Git 忽略。正式训练、推理和评测代码均在 `src/`。
@@ -30,7 +31,9 @@
 
 ## 命令
 
-训练一个数据集：
+当前推理默认读取 `data/checkpoints/model_score_consistent/` 的 11 个权重。原 Detect-only E6 权重保留在 `data/checkpoints/model/`。权重和训练缓存位于 Git 忽略的 `data/` 中。
+
+训练一个数据集（已有冻结 B3 缓存时）：
 
 ```bash
 python -m src.training.train \
@@ -39,6 +42,19 @@ python -m src.training.train \
   --output /path/to/checkpoint.pt \
   --device cuda:0
 ```
+
+`--training-data` 应传入与配置中随机种子一致的无标签合成缓存；`--frozen-b3-root` 和 `--initial-checkpoint` 可以覆盖配置默认路径。训练从原 E6 权重开始，固定 16 Epoch，只更新模型参数。若需重新构建冻结 B3 缓存：
+
+```bash
+/home/pengxf/anaconda3/envs/vit/bin/python src/training/build_frozen_b3.py \
+  --config configs/model.json \
+  --dataset realTraffic \
+  --device cuda:0
+```
+
+该构建脚本需使用已安装 `open_clip` 的 `vit` 环境并以脚本方式运行，因为它直接导入历史冻结 B3 评分代码。数据路径在 `configs/model.json` 中声明，历史实现保存在 `.worktrees/rcca-cadm-e6aad7d/`。
+
+当前训练公式为 `S_final = S_B3 + 0.05 × calibrated_delta`，`L = L_hardRanking + 0.5 L_unchanged + 0.5 L_reversibleWarp`。B3 和 T3 在训练中冻结，校准尺度不参与梯度；逐点修正保留梯度。
 
 多 GPU 推理：
 
@@ -64,12 +80,13 @@ python -m src.evaluation.evaluate_workers \
 python -m pytest tests -q
 ```
 
-## 已验证不变量
+## 已验证不变量与结果
 
 - 参数量：`2,059,973`
 - Checkpoint 状态张量：`73`
-- 历史 Detect-only Checkpoint 严格加载误差：`0.0`
-- 模型输出、检测损失和梯度误差：`0.0`
-- 4,045,296 个历史逐点分数误差：`0.0`
+- 11 个新权重与实验归档逐字节相同，并全部严格加载。
+- 相同 CPU 输入与实验归档的正式推理分数逐点误差为 `0.0`；CPU 与历史 GPU 结果在所检信号上的最大差异为 `1.37e-6`。
+- 正式训练入口与实验实现对同一信号的损失、校准尺度和各模块梯度范数完全相同。
+- All-11 新版本 Aff-F1 / VUS-PR / VUS-ROC 为 `0.730799 / 0.399243 / 0.843610`；历史 E6 为 `0.731820 / 0.398455 / 0.842835`。本轮是一个随机种子的结果，Aff-F1 及事件命中有小幅下降；详细结果见 `experiments/score_consistency_20261113/consistent_full/final_report.md`。
 
-旧 Checkpoint 中的历史模型标记仍由兼容加载器识别；新 Checkpoint 写入中性标记 `model` 与 `evidence_head`。
+复制的实验 Checkpoint 保留原有兼容标记；加载器仍严格检查三状态拓扑和全部状态张量。

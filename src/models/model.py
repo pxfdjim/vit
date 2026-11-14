@@ -1,13 +1,11 @@
-"""Final detect-only reference alignment model.
+"""Three-state reference alignment model.
 
 The network topology is unchanged from E1: three-state differentiable
-monotone alignment and the structural evidence head remain intact.  Training
-uses only the validated detection objective; path supervision is intentionally
-absent.
+monotone alignment and the structural evidence head remain intact. Training
+uses the score-consistent detection objective in src.training.train.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
@@ -258,26 +256,6 @@ def reversible_warp(tokens: torch.Tensor, amplitudes: torch.Tensor | None = None
     target.scatter_add_(2, left[..., None], (1 - fraction)[..., None])
     target.scatter_add_(2, right[..., None], fraction[..., None])
     return target @ tokens, target
-
-
-@dataclass(frozen=True)
-class LossWeights:
-    detect_margin: float = .35
-    gamma: float = .05
-
-
-def detection_loss(clean, synthetic, warped, clean_base, synthetic_base,
-                   altered: torch.Tensor, weights: LossWeights) -> torch.Tensor:
-    """Hard-synthetic ranking plus unchanged and reversible-warp stability."""
-    clean_score = clean_base.detach() + weights.gamma * clean["delta"]
-    synthetic_score = synthetic_base.detach() + weights.gamma * synthetic["delta"]
-    difficulty = (weights.detect_margin - (synthetic_base - clean_base).detach()).relu()
-    hard_weight = 1.0 + 2.0 * difficulty / difficulty.mean().clamp_min(1e-6)
-    ranking = (hard_weight[altered] * F.softplus(
-        weights.detect_margin - (synthetic_score - clean_score)[altered])).mean()
-    stable = F.smooth_l1_loss(synthetic_score[~altered], clean_score[~altered])
-    warp_stable = F.smooth_l1_loss(clean_base.detach() + weights.gamma * warped["delta"], clean_score)
-    return ranking + .5 * stable + .5 * warp_stable
 
 
 def parameter_group(name: str) -> str:

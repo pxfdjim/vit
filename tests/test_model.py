@@ -7,8 +7,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.models.model import (Model, LossWeights, detection_loss, gradient_norms,
-                              reversible_warp)
+from src.models.model import Model, gradient_norms, reversible_warp
+from src.training.train import final_score
+from src.inference.predict import signed_calibration
+import numpy as np
 
 
 def token_batch(batch=3):
@@ -33,7 +35,7 @@ def test_zero_initialized_head_preserves_b3():
     assert torch.equal(b3 + .05 * delta, b3)
 
 
-def test_detect_loss_reaches_expected_modules_after_head_activation():
+def test_final_point_score_matches_inference_and_reaches_alignment():
     model = Model()
     with torch.no_grad():
         model.fusion.out.weight.fill_(1e-3)
@@ -43,10 +45,15 @@ def test_detect_loss_reaches_expected_modules_after_head_activation():
                                      vq + .3 * torch.randn_like(vq), nr, vr)
     warped_n, target = reversible_warp(nq, torch.tensor([1., -1., .7, -.7]))
     warped = model.forward_tokens(warped_n, target @ vq, nr, vr)
-    altered = torch.zeros(4, 14, dtype=torch.bool)
-    altered[:, 4:8] = True
-    loss = detection_loss(clean, synthetic, warped, torch.zeros(4, 14),
-                          torch.zeros(4, 14), altered, LossWeights())
+    length = 224 + 56 * 3
+    base = torch.linspace(.2, 1.2, length, dtype=torch.float64)
+    score, _ = final_score(synthetic["delta"], base)
+    reference, _ = signed_calibration(synthetic["delta"].detach(), base.numpy(),
+                                      length, torch.device("cpu"))
+    assert np.allclose(score.detach().numpy(), base.numpy() + .05 * reference, atol=1e-12)
+    clean_score, _ = final_score(clean["delta"], base)
+    warp_score, _ = final_score(warped["delta"], base)
+    loss = (score - clean_score).square().mean() + (warp_score - clean_score).square().mean()
     model.zero_grad(set_to_none=True)
     loss.backward()
     norms = gradient_norms(model)
