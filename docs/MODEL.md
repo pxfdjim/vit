@@ -80,13 +80,12 @@ python -m src.evaluation.evaluate_workers \
 python -m pytest tests -q
 ```
 
-## 已验证不变量与结果
+## 结构与复现检查
 
 - 参数量：`2,059,973`
 - Checkpoint 状态张量：`73`
 - 11 个新权重与实验归档逐字节相同，并全部严格加载。
 - 相同 CPU 输入与实验归档的正式推理分数逐点误差为 `0.0`；CPU 与历史 GPU 结果在所检信号上的最大差异为 `1.37e-6`。
 - 正式训练入口与实验实现对同一信号的损失、校准尺度和各模块梯度范数完全相同。
-- All-11 新版本 Aff-F1 / VUS-PR / VUS-ROC 为 `0.730799 / 0.399243 / 0.843610`；历史 E6 为 `0.731820 / 0.398455 / 0.842835`。本轮是一个随机种子的结果，Aff-F1 及事件命中有小幅下降；详细结果见 `experiments/score_consistency_20261113/consistent_full/final_report.md`。
 
 复制的实验 Checkpoint 保留原有兼容标记；加载器仍严格检查三状态拓扑和全部状态张量。
