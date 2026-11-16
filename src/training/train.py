@@ -21,49 +21,15 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.models.model import load_model_checkpoint, gradient_norms, reversible_warp
+from src.core.scoring import calibrated_delta, final_score
+from src.models.model import Model, gradient_norms, load_numeric_from_full, reversible_warp
 
 
 @torch.no_grad()
 def projected_visual(model, visual: torch.Tensor, device: torch.device,
                      batch_size: int = 256) -> torch.Tensor:
-    return torch.cat([model.visual(visual[start:start + batch_size].float().to(device)).half()
+    return torch.cat([model.visual(visual[start:start + batch_size].float().to(device))
                       for start in range(0, len(visual), batch_size)])
-
-
-def restore_point(local: torch.Tensor) -> torch.Tensor:
-    """Differentiable 14-column to point restoration for covered windows."""
-    windows = local.shape[0]
-    interpolated = F.interpolate(local.double()[:, None], size=224, mode="linear",
-                                 align_corners=False)[:, 0]
-    total = 224 + 56 * (windows - 1)
-    positions = torch.arange(224, device=local.device)[None] + \
-        56 * torch.arange(windows, device=local.device)[:, None]
-    point = local.new_zeros(total, dtype=torch.float64)
-    counts = local.new_zeros(total, dtype=torch.float64)
-    point.scatter_add_(0, positions.reshape(-1), interpolated.reshape(-1))
-    counts.scatter_add_(0, positions.reshape(-1), torch.ones_like(interpolated).reshape(-1))
-    return point / counts.clamp_min(1)
-
-
-def calibrated_delta(local: torch.Tensor, base: torch.Tensor) -> tuple[torch.Tensor, float]:
-    """Apply the same signed positive-median calibration as inference."""
-    point = restore_point(local)
-    detached = point.detach().abs()
-    positive = detached[torch.isfinite(detached) & (detached > 1e-12)]
-    if not positive.numel():
-        return point, 1.0
-    reference = base.detach()
-    reference = reference[torch.isfinite(reference) & (reference > 1e-8)]
-    base_median = float(torch.quantile(reference, .5)) if reference.numel() else 1.0
-    scale = float(np.clip(base_median / max(float(torch.quantile(positive, .5)), 1e-12),
-                          1e-4, 1e4))
-    return point * scale, scale
-
-
-def final_score(local: torch.Tensor, base: torch.Tensor, gamma: float = .05):
-    delta, scale = calibrated_delta(local, base)
-    return base + gamma * delta, scale
 
 
 def main() -> int:
@@ -90,9 +56,13 @@ def main() -> int:
     if training_data["labels_read"] or int(training_data["seed"]) != seed:
         raise RuntimeError("invalid unlabeled synthetic cache")
     dataset = training_data["dataset"]
-    initial_checkpoint = args.initial_checkpoint or Path(config["initial_checkpoint_root"]) / f"{dataset}.pt"
+    initial_checkpoint = args.initial_checkpoint or Path(config["numeric_initial_checkpoint_root"]) / f"{dataset}.pt"
     frozen_root = args.frozen_b3_root or Path(config["frozen_b3_root"])
-    model, original = load_model_checkpoint(initial_checkpoint, device)
+    model_config = config["model_config"]
+    model = Model(hidden=int(model_config["hidden"]), heads=int(model_config["heads"]),
+                  layers=int(model_config["layers"]))
+    load_numeric_from_full(model, initial_checkpoint)
+    model = model.to(device)
     initial = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
     clean_raw = training_data["raw"].to(device)
     synthetic_raw = training_data["synthetic_raw"].to(device)
@@ -128,26 +98,22 @@ def main() -> int:
         vs = synthetic_visual[indices].float()
         def output(numeric, visual, prefix):
             ids = row[f"{prefix}_reference_ids"].long()
-            columns = row[f"{prefix}_reference_columns"].long()[..., None]
-            nr_full, vr_full = numeric[ids], visual[ids]
-            nr = nr_full.gather(1, columns.expand(-1, -1, nr_full.shape[-1]))
-            vr = vr_full.gather(1, columns.expand(-1, -1, vr_full.shape[-1]))
-            return model.forward_tokens(numeric, visual, nr, vr)
+            anchor = row[f"{prefix}_reference_columns"].to(numeric.dtype)
+            return model.forward_tokens(numeric, visual, numeric[ids], visual[ids], anchor)
         clean = output(nq, vq, "clean")
         synthetic = output(ns, vs, "synthetic")
         warped_n, target = reversible_warp(nq)
         warped_v = target @ vq
         ids = row["clean_reference_ids"].long()
-        columns = row["clean_reference_columns"].long()[..., None]
-        nr_full, vr_full = nq[ids], vq[ids]
-        nr = nr_full.gather(1, columns.expand(-1, -1, nr_full.shape[-1]))
-        vr = vr_full.gather(1, columns.expand(-1, -1, vr_full.shape[-1]))
-        warped = model.forward_tokens(warped_n, warped_v, nr, vr)
+        anchor = row["clean_reference_columns"].to(nq.dtype)
+        warped = model.forward_tokens(warped_n, warped_v, nq[ids], vq[ids],
+                                      (target @ anchor[..., None]).squeeze(-1))
         gamma = float(config["loss_weights"]["gamma"])
         clean_score, clean_scale = final_score(clean["delta"], row["clean_score"], gamma)
         synthetic_score, synthetic_scale = final_score(synthetic["delta"], row["synthetic_score"], gamma)
         warped_delta, _ = calibrated_delta(warped["delta"], row["clean_score"])
-        clean_delta, _ = calibrated_delta(clean["delta"], row["clean_score"])
+        expected_warped = (target @ clean["delta"][..., None]).squeeze(-1)
+        target_delta, _ = calibrated_delta(expected_warped, row["clean_score"])
         mask = row["point_mask"].bool()
         base_difference = row["synthetic_score"] - row["clean_score"]
         base_positive = row["clean_score"][row["clean_score"] > 1e-8]
@@ -162,8 +128,8 @@ def main() -> int:
         unchanged = (F.smooth_l1_loss(score_difference[~mask] / margin,
                                       torch.zeros_like(score_difference[~mask]))
                      if (~mask).any() else ranking.new_zeros(()))
-        warp = F.smooth_l1_loss(gamma * (warped_delta - clean_delta) / margin,
-                                torch.zeros_like(clean_delta))
+        warp = F.smooth_l1_loss(gamma * (warped_delta - target_delta) / margin,
+                                torch.zeros_like(target_delta))
         total = (ranking + float(config["loss_weights"]["unchanged"]) * unchanged
                  + float(config["loss_weights"]["reversible_warp"]) * warp)
         return total, {"ranking": ranking, "unchanged": unchanged, "warp": warp,
@@ -175,12 +141,29 @@ def main() -> int:
     smoke_loss, smoke = forward_one(first)
     optimizer.zero_grad(set_to_none=True)
     smoke_loss.backward()
+    initial_gradient = gradient_norms(model)
+    if not np.isfinite(float(smoke_loss.detach())) or initial_gradient["scoring_head"] <= 0:
+        raise RuntimeError(f"invalid zero-head gradient smoke: {initial_gradient}")
+    # A zero-initialized readout blocks upstream gradients on the first step.
+    # Probe the graph with a temporary nonzero readout, then restore it without
+    # an optimizer update or a change to the training initialization.
+    original_head = model.fusion.out.weight.detach().clone()
+    with torch.no_grad():
+        model.fusion.out.weight.fill_(1e-3)
+    optimizer.zero_grad(set_to_none=True)
+    probe_loss, _ = forward_one(first)
+    probe_loss.backward()
     gradient = gradient_norms(model)
-    if not np.isfinite(float(smoke_loss.detach())) or gradient["alignment"] <= 0 or gradient["scoring_head"] <= 0:
-        raise RuntimeError(f"invalid gradient smoke: {gradient}")
+    with torch.no_grad():
+        model.fusion.out.weight.copy_(original_head)
+    if not np.isfinite(float(probe_loss.detach())) or \
+            gradient["alignment"] <= 0 or gradient["scoring_head"] <= 0:
+        raise RuntimeError(f"invalid upstream gradient smoke: {gradient}")
     print(json.dumps({"stage": "smoke_passed", "dataset": dataset,
                       "signal": first, "loss": float(smoke_loss.detach()),
-                      "gradients": gradient, "scales": [smoke["clean_scale"],
+                      "initial_gradients": initial_gradient,
+                      "upstream_gradients": gradient,
+                      "scales": [smoke["clean_scale"],
                                                     smoke["synthetic_scale"]]}), flush=True)
     if args.smoke:
         return 0
@@ -207,16 +190,20 @@ def main() -> int:
         print(json.dumps(row), flush=True)
     state = {name: value.detach().cpu() for name, value in model.state_dict().items()}
     parameter_change = max(float((state[name] - initial[name]).abs().max()) for name in state)
-    output = {"state_dict": state, "model_config": original["model_config"],
-              "legacy_model_config": original.get("legacy_model_config", {}),
+    output = {"state_dict": state, "model_config": model_config,
               "dataset": dataset, "variant": "Model", "seed": seed,
-              "objective": "frozen_b3_plus_calibrated_apra_point_score",
-              "history": history, "gradient_audit_by_loss": {"final_score": gradient},
-              "parameter_counts": original.get("parameter_counts", {}),
-              "parameter_change_from_E6": parameter_change,
+              "objective": "reference_prior_posterior_point_score",
+              "history": history, "gradient_audit_by_loss": {"final_score": gradient,
+                                                              "zero_head": initial_gradient},
+              "parameter_counts": {"all": sum(p.numel() for p in model.parameters()),
+                                   "numeric": sum(p.numel() for p in model.numeric.parameters()),
+                                   "alignment": sum(p.numel() for p in model.aligner.parameters()),
+                                   "scoring_head": sum(p.numel() for p in model.fusion.parameters())},
+              "parameter_change_from_initial": parameter_change,
               "elapsed_seconds": time.perf_counter() - started,
               "labels_used": False, "checkpoint_selection": "fixed_final_epoch",
               "source_training_data": str(args.training_data),
+              "source_numeric_checkpoint": str(initial_checkpoint),
               "source_frozen_b3": str(frozen_root / dataset),
               "loss_weights": config["loss_weights"],
               "training_config": config["training"]}

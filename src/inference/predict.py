@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the final model correction on frozen B3 scores and T3 paths."""
+"""Run reference-prior correction using frozen B3 and stored T3 paths."""
 from __future__ import annotations
 
 import argparse
@@ -18,13 +18,12 @@ if str(ROOT) not in sys.path:
 
 from src.evaluation.orionbench_protocol import DATASETS, evaluation_frame, signal_names
 from src.inference.artifacts import (publish_json_no_replace, publish_npz_no_replace,
-                                     read_score, write_score)
+                                     write_score)
 from src.core.visual_features import (expected_window_count, input_digest,
-                                      intermediate_cache_path, load_final_tokens,
+                                      intermediate_cache_path,
                                       validate_intermediate_cache)
-from src.core.reference import (column_map, fitted_standardized_windows, match_paths,
-                                patch_tokens, point_scores_from_maps, positive_median,
-                                select_reference_windows, visual_costs)
+from src.core.reference import fitted_standardized_windows, patch_tokens
+from src.core.scoring import calibrated_delta
 from src.models.model import load_model_checkpoint
 
 
@@ -34,9 +33,6 @@ VARIANTS = ("B3", "Model")
 def load_visual_features(raw: np.ndarray, context: dict, config: dict):
     digest = input_digest(raw)
     windows = expected_window_count(len(raw))
-    _, final_path = load_final_tokens([Path(path) for path in config["visual_features"]["final_cache_roots"]],
-                                     context, digest, windows)
-    final = torch.load(final_path, map_location="cpu", weights_only=True)
     candidates = [intermediate_cache_path(Path(root), context, digest)
                   for root in config["visual_features"]["block_cache_roots"]]
     block_path = next((path for path in candidates if path.is_file()), None)
@@ -44,24 +40,34 @@ def load_visual_features(raw: np.ndarray, context: dict, config: dict):
         raise FileNotFoundError(f"missing Block-6 cache: {candidates}")
     block = torch.load(block_path, map_location="cpu", weights_only=True)
     validate_intermediate_cache(block, digest=digest, expected_windows=windows, path=block_path)
-    return final, block, final_path, block_path, digest
-
-
-def restore(local: torch.Tensor, full_length: int, device: torch.device) -> np.ndarray:
-    values = point_scores_from_maps(column_map(local.double()), full_length=full_length,
-                                    device=device)
-    return np.asarray(values, np.float64)
+    return block, digest
 
 
 def signed_calibration(local, base, full_length, device):
-    point = restore(local, full_length, device)
-    magnitude = np.abs(point[np.isfinite(point)])
-    magnitude = magnitude[magnitude > 1e-12]
-    if not len(magnitude):
-        return np.zeros_like(point), 1.0
-    scale = float(np.clip(positive_median(base) /
-                         max(float(np.median(magnitude)), 1e-12), 1e-4, 1e4))
-    return point * scale, scale
+    if len(base) != full_length:
+        raise ValueError("base score length does not match the input")
+    correction, scale = calibrated_delta(local, torch.as_tensor(base, device=device))
+    return correction.detach().cpu().numpy(), scale
+
+
+def stored_t3_reference(path: Path, windows: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Read the immutable T3 selector output without repeating its DTW search."""
+    with np.load(path, allow_pickle=False) as stored:
+        ids = stored["t3_reference_window_ids"].astype(np.int64)
+        columns = stored["t3_reference_columns"].astype(np.float32)
+        path_masks = stored["t3_path_masks"].astype(bool)
+    if ids.shape != (windows,) or columns.shape != (windows, 14) or \
+            path_masks.shape != (windows, 14, 14):
+        raise ValueError("stored T3 path shape differs from visual windows")
+    if np.any(ids < 0) or np.any(ids >= windows) or \
+            np.any(np.abs(ids - np.arange(windows)) < 4):
+        raise ValueError("stored T3 reference is missing or overlaps its query")
+    if not np.isfinite(columns).all() or np.any(columns < 0) or np.any(columns > 13) or \
+            np.any(np.diff(columns, axis=1) < -1e-5):
+        raise ValueError("stored T3 column centers are invalid")
+    if not np.all(path_masks[:, 0, 0]) or not np.all(path_masks[:, -1, -1]):
+        raise ValueError("stored T3 paths do not have fixed endpoints")
+    return torch.from_numpy(ids), torch.from_numpy(np.rint(columns).astype(np.float32))
 
 
 @torch.inference_mode()
@@ -76,11 +82,9 @@ def model_evidence(model, windows, patch, reference_ids, reference_columns, batc
     for start in range(0, len(windows), batch_size):
         stop = min(start + batch_size, len(windows))
         ids = reference_ids[start:stop]
-        columns = reference_columns[start:stop][..., None]
-        nr_full, vr_full = numeric[ids], visual[ids]
-        nr = nr_full.gather(1, columns.expand(-1, -1, nr_full.shape[-1]))
-        vr = vr_full.gather(1, columns.expand(-1, -1, vr_full.shape[-1]))
-        output = model.forward_tokens(numeric[start:stop], visual[start:stop], nr, vr)
+        anchor = reference_columns[start:stop]
+        output = model.forward_tokens(numeric[start:stop], visual[start:stop],
+                                      numeric[ids], visual[ids], anchor)
         alignment = output["alignment"]
         deltas.append(output["delta"])
         match = alignment["soft_match"]
@@ -88,7 +92,8 @@ def model_evidence(model, windows, patch, reference_ids, reference_columns, batc
         entropy = -(normalized.clamp_min(1e-8) * normalized.clamp_min(1e-8).log()).sum(-1)
         entropy = entropy / np.log(14)
         index = torch.arange(14, device=match.device, dtype=match.dtype)
-        displacement = (normalized * index[None, None]).sum(-1) - index[None]
+        displacement = (normalized * index[None, None]).sum(-1) - anchor
+        evidence = alignment["evidence"]
         diagnostics.append({
             "path_entropy": float(entropy.mean().cpu()),
             "match_probability": float(match.sum(-1).mean().cpu()),
@@ -96,10 +101,12 @@ def model_evidence(model, windows, patch, reference_ids, reference_columns, batc
             "reference_skip": float(alignment["reference_skip"].mean().cpu()),
             "reliability": float(alignment["reliability"].mean().cpu()),
             "alignment_displacement": float(displacement.abs().mean().cpu()),
-            "unmatched_numeric": float(alignment["unmatched_numeric"].norm(dim=-1).mean().cpu()),
-            "unmatched_visual": float(alignment["unmatched_visual"].norm(dim=-1).mean().cpu()),
-            "structural_numeric": float(alignment["structural_numeric"].norm(dim=-1).mean().cpu()),
-            "structural_visual": float(alignment["structural_visual"].norm(dim=-1).mean().cpu()),
+            "numeric_matched_difference": float(evidence[..., 0].mean().cpu()),
+            "visual_matched_difference": float(evidence[..., 1].mean().cpu()),
+            "numeric_unmatched_difference": float(evidence[..., 2].mean().cpu()),
+            "visual_unmatched_difference": float(evidence[..., 3].mean().cpu()),
+            "numeric_structure": float(evidence[..., 4].mean().cpu()),
+            "visual_structure": float(evidence[..., 5].mean().cpu()),
             "delta_mean": float(output["delta"].mean().cpu()),
             "delta_std": float(output["delta"].std(unbiased=False).cpu()),
         })
@@ -148,24 +155,26 @@ def main() -> int:
             frame = evaluation_frame(data_root, dataset, signal)
             raw = frame.value.to_numpy(np.float64)
             timestamps = frame.timestamp.to_numpy()
-            final, block, _, _, digest = load_visual_features(
+            block, digest = load_visual_features(
                 raw, {"dataset": dataset, "signal": signal}, config)
-            patch = patch_tokens(block["intermediate_patch"]).float().to(device)
-            pool = select_reference_windows(patch_tokens(final["patch"]).to(device))
-            costs = visual_costs(patch.reshape(len(patch), 14, 14, -1), pool)
-            t3 = match_paths(costs, pool, band=2, penalty_scale=.1)
-            with np.load(feature_root / "feature_diagnostics" / dataset / signal / "evidence.npz") as stored:
-                if not np.array_equal(t3.reference_ids.cpu().numpy(), stored["t3_reference_window_ids"]):
-                    raise RuntimeError("T3 reference mismatch")
-                if not np.array_equal(t3.reference_columns.cpu().numpy(), stored["t3_reference_columns"]):
-                    raise RuntimeError("T3 path mismatch")
-            reference_ids = t3.reference_ids.long().to(device)
-            reference_columns = t3.reference_columns.round().long().to(device)
+            # The unlabeled synthetic training cache stores Block-6 patches in
+            # float16; use the same quantization before the frozen projection.
+            patch = patch_tokens(block["intermediate_patch"]).half().float().to(device)
+            reference_ids, reference_columns = stored_t3_reference(
+                feature_root / "feature_diagnostics" / dataset / signal / "evidence.npz",
+                len(patch))
+            reference_ids = reference_ids.to(device)
+            reference_columns = reference_columns.to(device)
             fitted = stats[dataset][signal]
             start = int(fitted["fit_points"]) if dataset in {"MSL", "SMAP"} else 0
             windows = fitted_standardized_windows(raw, fitted, start).to(device)
-            b3, source_timestamps = read_score(
-                feature_root / "point_scores" / dataset / signal / "B3_raw_numeric_l010.npz")
+            with np.load(feature_root / "point_scores" / dataset / signal /
+                         "B3_raw_numeric_l010.npz", allow_pickle=False) as stored:
+                b3 = stored["scores"].astype(np.float64)
+                source_timestamps = stored["timestamps"]
+                metadata = json.loads(str(stored["metadata_json"][0]))
+            if metadata.get("input_digest") != digest[:20]:
+                raise RuntimeError("frozen B3 input digest mismatch")
             if not np.array_equal(source_timestamps, timestamps):
                 raise RuntimeError("B3 timestamp mismatch")
             if loaded_dataset != dataset:
@@ -186,7 +195,7 @@ def main() -> int:
                 write_score(args.output_root / "point_scores" / dataset / signal / f"{name}.npz",
                             score, timestamps,
                             {"variant": name, "labels_opened": False,
-                             "fixed_reference": "T3", "fixed_dtw_anchor": "T3",
+                             "fixed_reference": "T3", "dtw_prior": "T3",
                              "code_commit": commit, "input_digest": digest[:20],
                              "base": "B3" if name == "Model" else None,
                              "gamma": gamma if name == "Model" else None},
@@ -194,7 +203,7 @@ def main() -> int:
             publish_npz_no_replace(diagnostic_path, point_delta=point_delta)
             records.append({"dataset": dataset, "signal": signal, "status": "passed",
                             "elapsed_seconds": time.perf_counter() - tick,
-                            "labels_opened": False, "t3_reference_error": 0, "t3_path_error": 0})
+                            "labels_opened": False, "stored_t3_valid": True})
             print(f"[{ordinal}/{len(tasks)}] {dataset}/{signal} {records[-1]['elapsed_seconds']:.2f}s",
                   flush=True)
         except Exception as error:

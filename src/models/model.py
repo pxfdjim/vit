@@ -1,14 +1,7 @@
-"""Three-state reference alignment model.
-
-The network topology is unchanged from E1: three-state differentiable
-monotone alignment and the structural evidence head remain intact. Training
-uses the score-consistent detection objective in src.training.train.
-"""
+"""Reference-prior three-state alignment with explicit anomaly evidence."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
-
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -58,12 +51,7 @@ class VisualColumnEncoder(nn.Module):
         return F.normalize(F.layer_norm(encoded, (encoded.shape[-1],)), dim=-1)
 
 
-TOKENS = 14
 HIDDEN = 192
-
-
-def _normalize_rows(matrix: torch.Tensor) -> torch.Tensor:
-    return matrix / matrix.sum(-1, keepdim=True).clamp_min(1e-8)
 
 
 def _monotone_marginals(match: torch.Tensor, reject: torch.Tensor,
@@ -118,119 +106,118 @@ def _monotone_marginals(match: torch.Tensor, reject: torch.Tensor,
             torch.stack(skip_rows, dim=1))
 
 
+def _first_difference(tokens: torch.Tensor) -> torch.Tensor:
+    return torch.cat((torch.zeros_like(tokens[:, :1]), tokens[:, 1:] - tokens[:, :-1]), dim=1)
+
+
 class AnomalyPreservingReferenceAlignment(nn.Module):
-    """DTW-anchored monotone soft matching with two explicit gap states."""
-    def __init__(self, hidden: int = HIDDEN, heads: int = 4):
+    """Match original reference columns under a frozen DTW position prior."""
+
+    def __init__(self):
         super().__init__()
-        del heads
-        self.query_projection = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.GELU(),
-                                              nn.LayerNorm(hidden))
-        self.reference_projection = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.GELU(),
-                                                  nn.LayerNorm(hidden))
-        self.query_structure = nn.Linear(hidden * 2, hidden, bias=False)
-        self.reference_structure = nn.Linear(hidden * 2, hidden, bias=False)
-        self.reject_head = nn.Sequential(nn.Linear(hidden * 4, hidden), nn.GELU(),
-                                         nn.Linear(hidden, 1))
-        self.skip_head = nn.Sequential(nn.Linear(hidden * 2, hidden // 2), nn.GELU(),
-                                       nn.Linear(hidden // 2, 1))
-        self.distance_penalty = nn.Parameter(torch.tensor(0.75))
-        self.reliability = nn.Sequential(nn.Linear(4, 16), nn.GELU(), nn.Linear(16, 1))
+        self.anchor_cost = nn.Parameter(torch.zeros(()))
+        # Query Reject and Reference Skip have equal total mass on equal-length
+        # endpoint-constrained paths; one shared cost avoids two unidentifiable biases.
+        self.gap_cost = nn.Parameter(torch.ones(()))
 
     def forward(self, nq: torch.Tensor, vq: torch.Tensor,
-                nr: torch.Tensor, vr: torch.Tensor) -> dict[str, torch.Tensor]:
-        q = F.normalize(self.query_projection(torch.cat((nq, vq), -1)), dim=-1)
-        r = F.normalize(self.reference_projection(torch.cat((nr, vr), -1)), dim=-1)
-        q_delta = torch.cat((nq - nq.roll(1, 1), vq - vq.roll(1, 1)), -1)
-        r_delta = torch.cat((nr - nr.roll(1, 1), vr - vr.roll(1, 1)), -1)
-        qs = F.normalize(self.query_structure(q_delta), dim=-1)
-        rs = F.normalize(self.reference_structure(r_delta), dim=-1)
-        match_logits = 3.0 * torch.einsum("bih,bjh->bij", q, r)
-        match_logits = match_logits + torch.einsum("bih,bjh->bij", qs, rs)
-        index = torch.arange(nq.shape[1], device=nq.device, dtype=nq.dtype)
-        distance = (index[:, None] - index[None, :]).abs()
-        match_logits = match_logits - F.softplus(self.distance_penalty) * distance.square() / 4.0
-        match_logits = match_logits.masked_fill(distance[None] > 3, -1e4)
-        reject_logits = self.reject_head(torch.cat((nq, vq, q_delta), -1)).squeeze(-1)
-        skip_logits = self.skip_head(torch.cat((nr, vr), -1)).squeeze(-1) - 1.5
+                nr: torch.Tensor, vr: torch.Tensor,
+                anchor: torch.Tensor) -> dict[str, torch.Tensor]:
+        if nq.shape != vq.shape or nr.shape != vr.shape or nq.ndim != 3:
+            raise ValueError("query/reference views must be matching [batch,time,hidden] tensors")
+        if nq.shape[0] != nr.shape[0] or nq.shape[2] != nr.shape[2]:
+            raise ValueError("query and reference token shapes are incompatible")
+        if anchor.shape != nq.shape[:2] or not torch.isfinite(anchor).all():
+            raise ValueError("DTW anchor must have finite shape [batch,query_time]")
+        if torch.any(anchor < 0) or torch.any(anchor > nr.shape[1] - 1):
+            raise ValueError("DTW anchor is outside the reference window")
+
+        nq, vq = F.normalize(nq, dim=-1), F.normalize(vq, dim=-1)
+        nr, vr = F.normalize(nr, dim=-1), F.normalize(vr, dim=-1)
+        numeric_similarity = torch.einsum("bih,bjh->bij", nq, nr).clamp(-1, 1)
+        visual_similarity = torch.einsum("bih,bjh->bij", vq, vr).clamp(-1, 1)
+        columns = torch.arange(nr.shape[1], dtype=nq.dtype, device=nq.device)
+        anchor_distance = (columns[None, None] - anchor[..., None]).square()
+        match_logits = (numeric_similarity + visual_similarity) / 2 - \
+            F.softplus(self.anchor_cost) * anchor_distance
+        gap_logit = -F.softplus(self.gap_cost)
+        rejection_logits = gap_logit.expand(nq.shape[:2])
+        skip_logits = gap_logit.expand(nr.shape[:2])
         soft_match, rejection, reference_skip = _monotone_marginals(
-            match_logits, reject_logits, skip_logits)
-        row_match = soft_match.sum(-1)
-        normalized = _normalize_rows(soft_match)
-        aligned_n = normalized @ nr
-        aligned_v = normalized @ vr
-        entropy = -(normalized.clamp_min(1e-8) * normalized.clamp_min(1e-8).log()).sum(-1)
-        entropy = entropy / torch.log(torch.tensor(float(nq.shape[1]), device=nq.device))
-        expected = (normalized * index[None, None]).sum(-1)
-        local_smoothness = torch.cat((torch.ones_like(expected[:, :1]),
-                                      (expected[:, 1:] - expected[:, :-1]).abs()), 1)
-        coverage = 1.0 - reference_skip.mean(1, keepdim=True).expand_as(expected)
-        reliability = torch.sigmoid(self.reliability(torch.stack((
-            1.0 - entropy, row_match, coverage, torch.exp(-local_smoothness)), -1)).squeeze(-1))
-        unmatched_n = nq - row_match[..., None] * aligned_n
-        unmatched_v = vq - row_match[..., None] * aligned_v
-        structural_n = (nq - nq.roll(1, 1)) - (aligned_n - aligned_n.roll(1, 1))
-        structural_v = (vq - vq.roll(1, 1)) - (aligned_v - aligned_v.roll(1, 1))
+            match_logits, rejection_logits, skip_logits)
+        match_mass = soft_match.sum(-1)
+        conditional = soft_match / match_mass[..., None].clamp_min(1e-8)
+
+        def view_evidence(query: torch.Tensor, reference: torch.Tensor,
+                          similarity: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor,
+                                                             torch.Tensor]:
+            pair_difference = (1 - similarity) / 2
+            matched_difference = (soft_match * pair_difference).sum(-1)
+            # A rejected query still carries content. Compare it with the
+            # whole reference window without assigning it a forced match.
+            unmatched_difference = rejection * pair_difference.mean(-1)
+            query_change = _first_difference(query)
+            reference_change = _first_difference(reference)
+            squared_change = (query_change.square().sum(-1)[..., None]
+                              + reference_change.square().sum(-1)[:, None]
+                              - 2 * torch.einsum("bih,bjh->bij", query_change,
+                                                 reference_change)).clamp_min(0)
+            matched_structure = (soft_match * squared_change / 16).sum(-1)
+            unmatched_structure = rejection * query_change.square().sum(-1) / 4
+            structure = matched_structure + unmatched_structure
+            return matched_difference, unmatched_difference, structure
+
+        numeric_match, numeric_unmatched, numeric_structure = view_evidence(
+            nq, nr, numeric_similarity)
+        visual_match, visual_unmatched, visual_structure = view_evidence(
+            vq, vr, visual_similarity)
+        evidence = torch.stack((numeric_match, visual_match,
+                                numeric_unmatched, visual_unmatched,
+                                numeric_structure, visual_structure), dim=-1)
         return {"soft_match": soft_match, "rejection": rejection,
-                "reference_skip": reference_skip, "reliability": reliability,
-                "aligned_numeric": aligned_n, "aligned_visual": aligned_v,
-                "unmatched_numeric": unmatched_n, "unmatched_visual": unmatched_v,
-                "structural_numeric": structural_n, "structural_visual": structural_v}
+                "reference_skip": reference_skip, "reliability": match_mass,
+                "aligned_numeric": conditional @ nr,
+                "aligned_visual": conditional @ vr,
+                "evidence": evidence}
 
 
 class EvidenceHead(nn.Module):
-    """Convert aligned, unmatched, and structural evidence into a signed delta."""
-    def __init__(self, hidden: int = HIDDEN, heads: int = 4):
+    """Bounded signed correction from six posterior anomaly statistics."""
+    def __init__(self):
         super().__init__()
-        self.input = nn.Linear(hidden * 6 + 2, hidden)
-        layer = nn.TransformerEncoderLayer(hidden, heads, hidden * 2, dropout=.1,
-                                           batch_first=True, norm_first=True)
-        self.temporal = nn.TransformerEncoder(layer, 1)
-        self.out = nn.Linear(hidden, 1)
+        self.out = nn.Linear(6, 1)
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
-    def forward(self, nq: torch.Tensor, vq: torch.Tensor,
-                alignment: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        del nq, vq
-        features = torch.cat((alignment["unmatched_numeric"], alignment["unmatched_visual"],
-            alignment["structural_numeric"], alignment["structural_visual"],
-            alignment["aligned_numeric"], alignment["aligned_visual"],
-            alignment["rejection"][..., None], alignment["reliability"][..., None]), -1)
-        delta = torch.tanh(self.out(self.temporal(F.gelu(self.input(features)))).squeeze(-1))
-        return {"delta": delta}
+    def forward(self, evidence: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(self.out(evidence).squeeze(-1))
 
 
 class Model(nn.Module):
-    """Detect-only model with the validated three-state alignment topology."""
+    """T3 prior, three-state posterior, and explicit six-statistic readout."""
     def __init__(self, hidden: int = HIDDEN, heads: int = 4, layers: int = 2):
         super().__init__()
         self.numeric = NumericPatchEncoder(hidden, layers, heads)
         self.visual = VisualColumnEncoder(hidden)
-        self.aligner = AnomalyPreservingReferenceAlignment(hidden, heads)
-        self.fusion = EvidenceHead(hidden, heads)
+        self.aligner = AnomalyPreservingReferenceAlignment()
+        self.fusion = EvidenceHead()
 
     def forward_tokens(self, nq: torch.Tensor, vq: torch.Tensor,
-                       nr: torch.Tensor, vr: torch.Tensor) -> dict[str, torch.Tensor]:
-        alignment = self.aligner(nq, vq, nr, vr)
-        fusion = self.fusion(nq, vq, alignment)
-        return {"alignment": alignment, **fusion, "numeric_query": nq,
-                "visual_query": vq, "numeric_reference": nr, "visual_reference": vr}
+                       nr: torch.Tensor, vr: torch.Tensor,
+                       anchor: torch.Tensor) -> dict[str, torch.Tensor]:
+        alignment = self.aligner(nq, vq, nr, vr, anchor)
+        return {"alignment": alignment, "delta": self.fusion(alignment["evidence"])}
 
 
 def load_model_checkpoint(path: str | Path, device: str | torch.device = "cpu") -> tuple[Model, dict]:
-    """Load current or legacy checkpoints sharing the production topology."""
+    """Strictly load the redesigned topology; old models remain in Git history."""
     payload = torch.load(path, map_location="cpu", weights_only=True)
     configuration = payload.get("model_config", {})
-    compatibility = payload.get("legacy_model_config", configuration)
-    aligner = compatibility.get("aligner", "a" + "pra")
-    fusion = compatibility.get("fusion", "a" + "pra_head")
-    if aligner not in {"model", "a" + "pra"} or fusion not in {"evidence_head", "a" + "pra_head"}:
-        raise ValueError("checkpoint does not use the validated model topology")
-    if compatibility.get("reject", True) is not True:
-        raise ValueError("checkpoint does not contain the required three-state topology")
-    model = Model(hidden=int(configuration.get("hidden", compatibility.get("hidden", HIDDEN))),
-                  heads=int(configuration.get("heads", compatibility.get("heads", 4))),
-                  layers=int(configuration.get("layers", compatibility.get("layers", 2)))).to(device)
+    if configuration.get("architecture") != 2:
+        raise ValueError("checkpoint belongs to the previous architecture; retrain the alignment head")
+    model = Model(hidden=int(configuration.get("hidden", HIDDEN)),
+                  heads=int(configuration.get("heads", 4)),
+                  layers=int(configuration.get("layers", 2))).to(device)
     model.load_state_dict(payload["state_dict"], strict=True)
     return model, payload
 
